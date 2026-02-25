@@ -17,8 +17,9 @@ Supports **Windows 10/11**, **macOS 12+**, **Ubuntu/Debian**, **Fedora/RHEL**, a
 
 ### 2. Installation
 
-**macOS / Linux:**
+**macOS / Linux:** in terminal
 ```bash
+cd ~/Path/To/Your/File
 chmod +x install.sh
 ./install.sh
 ```
