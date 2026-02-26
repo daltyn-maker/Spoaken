@@ -27,6 +27,15 @@ echo -e "${CYAN}╔════════════════════�
 echo -e "${CYAN}║      SPOAKEN — Bootstrap Installer                   ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
+echo -e "  Optional flags (passed through to install.py):"
+echo -e "    ${CYAN}--noise${NC}        Install noise suppression (noisereduce)"
+echo -e "    ${CYAN}--translation${NC}  Install translation support (deep-translator)"
+echo -e "    ${CYAN}--llm${NC}          Install LLM + summarization (ollama, sumy, nltk)"
+echo -e "    ${CYAN}--no-vad${NC}       Skip webrtcvad  (use energy-gate fallback)"
+echo -e "    ${CYAN}--chat${NC}         Enable LAN chat server in config"
+echo ""
+echo -e "  Example:  ${CYAN}./install.sh --noise --translation${NC}"
+echo ""
 
 # ── 1. Find or install Python 3.9+ ─────────────────────────────────────────────
 log "Checking for most recent Python"
@@ -104,7 +113,14 @@ else
     CONFIG_ARG="--interactive"
 fi
 
-# ── 4. macOS: request Accessibility permission reminder ────────────────────────
+# ── 4. Collect any extra flags passed to this script ──────────────────────────
+#    e.g.  ./install.sh --noise --translation --llm
+EXTRA_FLAGS=""
+for arg in "$@"; do
+    EXTRA_FLAGS="$EXTRA_FLAGS $arg"
+done
+
+# ── 5. macOS: request Accessibility permission reminder ────────────────────────
 if [[ "$OS" == "Darwin" ]]; then
     echo ""
     warn "╔═══════════════════════════════════════════════════════╗"
@@ -115,12 +131,12 @@ if [[ "$OS" == "Darwin" ]]; then
     echo ""
 fi
 
-# ── 5. Run the Python installer ─────────────────────────────────────────────────
+# ── 6. Run the Python installer ─────────────────────────────────────────────────
 log "Launching Spoaken installer..."
 echo ""
 
 # shellcheck disable=SC2086
-"$PYTHON" "$SCRIPT_DIR/install.py" $CONFIG_ARG
+"$PYTHON" "$SCRIPT_DIR/install.py" $CONFIG_ARG $EXTRA_FLAGS
 
 EXIT_CODE=$?
 
@@ -131,6 +147,10 @@ if [[ $EXIT_CODE -eq 0 ]]; then
     echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "  Launch with: ${CYAN}python3 spoaken/spoaken_main.py${NC}"
+    echo ""
+    echo -e "  To add optional packages later, re-run with flags, e.g.:"
+    echo -e "    ${CYAN}./install.sh --noise --translation --llm${NC}"
+    echo -e " Or install from spoaken update module"
 else
     echo -e "${RED}[✘] Installation finished with errors (exit code $EXIT_CODE).${NC}"
     echo "    Review the output above and retry with:"

@@ -8,6 +8,15 @@ echo  ============================================================
 echo   SPOAKEN — Windows Bootstrap Installer
 echo  ============================================================
 echo.
+echo  Optional flags you can pass to this script:
+echo    --noise        Install noise suppression (noisereduce)
+echo    --translation  Install translation support (deep-translator)
+echo    --llm          Install LLM + summarization (ollama, sumy, nltk)
+echo    --no-vad       Skip webrtcvad  (use energy-gate fallback)
+echo    --chat         Enable LAN chat server in config
+echo.
+echo  Example:  windows_install.bat --noise --translation
+echo.
 
 :: ── Check for Admin rights ────────────────────────────────────────────────────
 net session >nul 2>&1
@@ -100,20 +109,26 @@ if exist "%~dp0spoaken_config.json" (
     set CONFIG_ARG=--interactive
 )
 
+:: ── Collect any extra flags passed to this script (--noise, --llm, etc.) ──────
+set EXTRA_FLAGS=%*
+
 :: ── Run the Python installer ──────────────────────────────────────────────────
 echo  [*] Launching Spoaken installer...
 echo.
-%PYTHON_EXE% "%~dp0install.py" %CONFIG_ARG%
+%PYTHON_EXE% "%~dp0install.py" %CONFIG_ARG% %EXTRA_FLAGS%
 
 if %errorlevel% equ 0 (
     echo.
     echo  ============================================================
     echo   Installation finished. Press any key to exit.
     echo  ============================================================
+    echo.
+    echo  To add optional features later, re-run with flags, e.g.:
+    echo    windows_install.bat --noise --translation --llm
 ) else (
     echo.
     echo  [X] Installation encountered errors. See output above.
-    echo  You can retry by running:  python install.py --interactive
+    echo  You can retry with:  python install.py --interactive
 )
 
 pause
