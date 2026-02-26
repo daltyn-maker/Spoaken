@@ -6,6 +6,7 @@ Usage:
     python install.py                          # reads spoaken_config.json
     python install.py --config my_config.json  # custom config path
     python install.py --interactive            # CLI prompt mode
+    #
 """
 
 import sys
@@ -44,9 +45,9 @@ NC     = "\033[0m"
 
 BANNER = f"""
 {CYAN}╔══════════════════════════════════════════════════════╗
-	  ║         SPOAKEN — Installer v1.0.0                   ║
-	  ║         Voice-to-Text Engine · Whisper + Vosk        ║
-	  ╚══════════════════════════════════════════════════════╝{NC}
+║         SPOAKEN — Installer v1.0.0                   ║
+║         Voice-to-Text Engine · Whisper + Vosk        ║
+╚══════════════════════════════════════════════════════╝{NC}
 """
 
 def log(msg):    print(f"{CYAN}[Spoaken]{NC} {msg}")
@@ -239,17 +240,51 @@ def ensure_pip():
     ok("pip up to date")
 
 # ─── Python packages ──────────────────────────────────────────────────────────
+# ─── Python packages ──────────────────────────────────────────────────────────
+
+# Always installed — Spoaken will not function without these.
 COMMON_PACKAGES = [
     "customtkinter",
     "Pillow",
     "faster-whisper",
     "sounddevice",
     "numpy",
-    "torch",
-    "transformers",
-    "happytransformer<4.0.0",
     "pyautogui",
     "rapidfuzz",
+    "websockets",          # required for LAN + online chat
+    "stem",                # required for Tor hidden service / P2P online chat
+    "PySocks",             # Tor SOCKS5 proxy for outbound .onion connections
+    "cryptography",        # Ed25519 identity keys for P2P DID
+]
+
+# Grammar correction — installed unless the user opts out.
+GRAMMAR_PACKAGES = [
+    "happytransformer<4.0.0",
+    "transformers",
+    "torch",
+]
+
+# Noise suppression — optional, improves transcription in noisy rooms.
+NOISE_PACKAGES = [
+    "noisereduce",
+]
+
+# Translation — optional, enables the 'translate' command.
+TRANSLATION_PACKAGES = [
+    "deep-translator",
+]
+
+# LLM (Ollama client + summarization pipeline) — optional.
+LLM_PACKAGES = [
+    "ollama",
+    "sumy",
+    "nltk",
+    "scikit-learn",
+]
+
+# Better VAD — optional but strongly recommended on systems where it builds cleanly.
+VAD_PACKAGES = [
+    "webrtcvad",
 ]
 
 PLATFORM_EXTRA = {
@@ -258,29 +293,109 @@ PLATFORM_EXTRA = {
     "Linux":   [],
 }
 
-def install_python_packages(gpu: bool = False):
-    if gpu and OS == "Windows":
-        log("Installing PyTorch with CUDA 12.1 support...")
-        pip_run("install", "torch", "--index-url",
-                "https://download.pytorch.org/whl/cu121")
-    else:
-        log("Installing PyTorch (CPU)...")
-        pip_run("install", "torch")
-    ok("PyTorch installed")
+def install_python_packages(gpu: bool = False, grammar: bool = True,
+                             noise: bool = False, translation: bool = False,
+                             llm: bool = False, vad: bool = True):
+    # ── PyTorch (handled separately for CUDA support) ──────────────────────────
+    if grammar:
+        if gpu and OS == "Windows":
+            log("Installing PyTorch with CUDA 12.1 support...")
+            pip_run("install", "torch", "--index-url",
+                    "https://download.pytorch.org/whl/cu121")
+        else:
+            log("Installing PyTorch (CPU)...")
+            pip_run("install", "torch")
+        ok("PyTorch installed")
 
-    extras = PLATFORM_EXTRA.get(OS, [])
-    all_pkgs = [p for p in COMMON_PACKAGES if p != "torch"] + extras
-
-    total = len(all_pkgs)
-    for i, pkg in enumerate(all_pkgs, 1):
-        log(f"[{i}/{total}] {pkg}")
+    # ── Core packages ──────────────────────────────────────────────────────────
+    platform_extras = PLATFORM_EXTRA.get(OS, [])
+    core_pkgs = COMMON_PACKAGES + platform_extras
+    total_core = len(core_pkgs)
+    log(f"Installing {total_core} core packages...")
+    for i, pkg in enumerate(core_pkgs, 1):
+        log(f"  [{i}/{total_core}] {pkg}")
         try:
             pip_run("install", "--upgrade", pkg)
             ok(pkg)
         except RuntimeError as e:
             warn(f"Could not install {pkg}: {e}")
 
-    ok("All Python packages installed")
+    # ── Grammar packages ───────────────────────────────────────────────────────
+    if grammar:
+        log("Installing grammar correction packages...")
+        for pkg in GRAMMAR_PACKAGES:
+            if pkg == "torch":
+                continue    # already handled above
+            try:
+                pip_run("install", "--upgrade", pkg)
+                ok(pkg)
+            except RuntimeError as e:
+                warn(f"Could not install {pkg}: {e}")
+    else:
+        warn("Grammar correction skipped (disabled in config).")
+
+    # ── Optional: noise suppression ────────────────────────────────────────────
+    if noise:
+        log("Installing noise suppression packages...")
+        for pkg in NOISE_PACKAGES:
+            try:
+                pip_run("install", "--upgrade", pkg)
+                ok(pkg)
+            except RuntimeError as e:
+                warn(f"Could not install {pkg}: {e}")
+    else:
+        log("Noise suppression skipped (enable later via Update window or --noise flag).")
+
+    # ── Optional: translation ─────────────────────────────────────────────────
+    if translation:
+        log("Installing translation packages...")
+        for pkg in TRANSLATION_PACKAGES:
+            try:
+                pip_run("install", "--upgrade", pkg)
+                ok(pkg)
+            except RuntimeError as e:
+                warn(f"Could not install {pkg}: {e}")
+    else:
+        log("Translation skipped (enable later via Update window or --translation flag).")
+
+    # ── Optional: LLM + summarization ─────────────────────────────────────────
+    if llm:
+        log("Installing LLM + summarization packages...")
+        for pkg in LLM_PACKAGES:
+            try:
+                pip_run("install", "--upgrade", pkg)
+                ok(pkg)
+            except RuntimeError as e:
+                warn(f"Could not install {pkg}: {e}")
+        # Download NLTK punkt data needed by sumy
+        try:
+            import nltk
+            log("Downloading NLTK tokenizer data...")
+            nltk.download("punkt",     quiet=True)
+            nltk.download("punkt_tab", quiet=True)
+            nltk.download("stopwords", quiet=True)
+            ok("NLTK data downloaded")
+        except Exception as e:
+            warn(f"NLTK data download failed: {e}")
+    else:
+        log("LLM/summarization skipped (enable later via Update window or --llm flag).")
+
+    # ── Optional: better VAD ───────────────────────────────────────────────────
+    if vad:
+        log("Installing webrtcvad (better Voice Activity Detection)...")
+        try:
+            pip_run("install", "--upgrade", "webrtcvad")
+            ok("webrtcvad installed")
+        except RuntimeError as e:
+            warn(
+                f"webrtcvad build failed ({e}). "
+                "Spoaken will use the built-in energy-gate fallback instead.\n"
+                "  Linux fix:  sudo apt install python3-dev build-essential\n"
+                "  Windows fix: install Visual C++ Build Tools from "
+                "https://visualstudio.microsoft.com/visual-cpp-build-tools/"
+            )
+
+    ok("Python package installation complete")
 
 # ─── Whisper model pre-download ───────────────────────────────────────────────
 def preload_whisper_model(model_name: str, models_dir: Path):
@@ -481,15 +596,35 @@ def write_runtime_config(cfg: dict, install_dir: Path):
     install_dir.mkdir(parents=True, exist_ok=True)
     with open(config_path, "w") as f:
         json.dump({
-            "whisper_model":   cfg.get("whisper_model", "base.en"),
-            "vosk_model":      cfg.get("vosk_model", None),
-            "vosk_enabled":    cfg.get("vosk_enabled", False),
-            "gpu":             cfg.get("gpu", False),
-            "grammar":         cfg.get("grammar", True),
-            "whisper_dir":     str(install_dir / "models" / "whisper"),
-            "vosk_dir":        str(install_dir / "models" / "vosk"),
-            "platform":        OS,
-            "install_dir":     str(install_dir),
+            # ── Transcription engines ──────────────────────────────────────────
+            "whisper_model":          cfg.get("whisper_model", "base.en"),
+            "whisper_enabled":        True,
+            "vosk_model":             cfg.get("vosk_model", None),
+            "vosk_enabled":           cfg.get("vosk_enabled", False),
+            "enable_giga_model":      False,
+            "vosk_model_accurate":    "vosk-model-en-us-0.42-gigaspeech",
+            # ── Hardware ──────────────────────────────────────────────────────
+            "gpu":                    cfg.get("gpu", False),
+            "mic_device":             None,
+            "noise_suppression":      cfg.get("noise", False),
+            # ── Grammar ───────────────────────────────────────────────────────
+            "grammar":                cfg.get("grammar", True),
+            # ── Chat / networking ──────────────────────────────────────────────
+            "chat_server_enabled":    cfg.get("chat_server_enabled", False),
+            "chat_server_port":       cfg.get("chat_server_port", 55300),
+            "chat_server_token":      cfg.get("chat_server_token", "spoaken"),
+            "android_stream_enabled": cfg.get("android_stream_enabled", False),
+            "android_stream_port":    cfg.get("android_stream_port", 55301),
+            # ── Memory management ─────────────────────────────────────────────
+            "memory_cap_words":       cfg.get("memory_cap_words", 300),
+            "memory_cap_minutes":     cfg.get("memory_cap_minutes", 10),
+            # ── Text quality ──────────────────────────────────────────────────
+            "duplicate_filter":       True,
+            # ── Paths ─────────────────────────────────────────────────────────
+            "whisper_dir":            str(install_dir / "models" / "whisper"),
+            "vosk_dir":               str(install_dir / "models" / "vosk"),
+            "platform":               OS,
+            "install_dir":            str(install_dir),
         }, f, indent=2)
     ok(f"Runtime config written to {config_path}")
 
@@ -530,8 +665,29 @@ def interactive_config() -> dict:
         except (ValueError, IndexError):
             print("Invalid choice, try again.")
 
-    gpu_raw = input("\nEnable GPU / CUDA acceleration? [y/N]: ").strip().lower()
-    grammar_raw = input("Install grammar correction (HappyTransformer)? [Y/n]: ").strip().lower()
+    gpu_raw        = input("\nEnable GPU / CUDA acceleration? [y/N]: ").strip().lower()
+    grammar_raw    = input("Install grammar correction (HappyTransformer/T5)? [Y/n]: ").strip().lower()
+    noise_raw      = input("Install noise suppression (noisereduce)? [y/N]: ").strip().lower()
+    translation_raw = input("Install translation support (deep-translator)? [y/N]: ").strip().lower()
+    llm_raw        = input("Install LLM + summarization packages (ollama, sumy, nltk)? [y/N]: ").strip().lower()
+    vad_raw        = input("Install webrtcvad for better Voice Activity Detection? [Y/n]: ").strip().lower()
+
+    print(f"\n{CYAN}── Chat / Networking ──────────────────────────────────────{NC}")
+    print("  LAN chat lets other Spoaken users on your network connect to this machine.")
+    chat_raw       = input("Enable LAN chat server at startup? [y/N]: ").strip().lower()
+    chat_port      = 55300
+    chat_token     = "spoaken"
+    if chat_raw in ("y", "yes"):
+        port_in = input("  Chat server port [55300]: ").strip()
+        chat_port  = int(port_in) if port_in.isdigit() else 55300
+        token_in   = input("  Shared auth token [spoaken]: ").strip()
+        chat_token = token_in or "spoaken"
+
+    android_raw  = input("Enable Android/browser live transcript stream? [y/N]: ").strip().lower()
+    android_port = 55301
+    if android_raw in ("y", "yes"):
+        port_in = input("  Stream port [55301]: ").strip()
+        android_port = int(port_in) if port_in.isdigit() else 55301
 
     default_dir = {
         "Windows": "C:\\Program Files\\Spoaken",
@@ -541,40 +697,57 @@ def interactive_config() -> dict:
     idir = input(f"\nInstall directory [{default_dir}]: ").strip() or default_dir
 
     return {
-        "whisper_model":  whisper_model,
-        "vosk_model":     vosk_model,
-        "vosk_enabled":   vosk_enabled,
-        "gpu":            gpu_raw in ("y", "yes"),
-        "grammar":        grammar_raw not in ("n", "no"),
-        "install_dir":    idir,
+        "whisper_model":          whisper_model,
+        "vosk_model":             vosk_model,
+        "vosk_enabled":           vosk_enabled,
+        "gpu":                    gpu_raw in ("y", "yes"),
+        "grammar":                grammar_raw not in ("n", "no"),
+        "noise":                  noise_raw in ("y", "yes"),
+        "translation":            translation_raw in ("y", "yes"),
+        "llm":                    llm_raw in ("y", "yes"),
+        "vad":                    vad_raw not in ("n", "no"),
+        "chat_server_enabled":    chat_raw in ("y", "yes"),
+        "chat_server_port":       chat_port,
+        "chat_server_token":      chat_token,
+        "android_stream_enabled": android_raw in ("y", "yes"),
+        "android_stream_port":    android_port,
+        "install_dir":            idir,
     }
 
 # ─── Main installation orchestrator ───────────────────────────────────────────
 def run_install(cfg: dict):
-    install_dir  = Path(cfg.get("install_dir", os.path.expanduser("~/spoaken")))
-    whisper_model = cfg.get("whisper_model", "base.en")
-    vosk_model   = cfg.get("vosk_model", None)
-    vosk_enabled = cfg.get("vosk_enabled", False)
-    gpu          = cfg.get("gpu", False)
-    grammar      = cfg.get("grammar", True)
-    whisper_dir  = install_dir / "models" / "whisper"
-    vosk_dir     = install_dir / "models" / "vosk"
+    install_dir     = Path(cfg.get("install_dir", os.path.expanduser("~/spoaken")))
+    whisper_model   = cfg.get("whisper_model", "base.en")
+    vosk_model      = cfg.get("vosk_model", None)
+    vosk_enabled    = cfg.get("vosk_enabled", False)
+    gpu             = cfg.get("gpu", False)
+    grammar         = cfg.get("grammar", True)
+    noise           = cfg.get("noise", False)
+    translation     = cfg.get("translation", False)
+    llm             = cfg.get("llm", False)
+    vad             = cfg.get("vad", True)
+    chat_enabled    = cfg.get("chat_server_enabled", False)
+    android_enabled = cfg.get("android_stream_enabled", False)
+    whisper_dir     = install_dir / "models" / "whisper"
+    vosk_dir        = install_dir / "models" / "vosk"
 
     print(BANNER)
-    log(f"Platform   : {OS} ({platform.version()})")
-    log(f"Python     : {platform.python_version()} @ {python_exe()}")
-    log(f"Install dir: {install_dir}")
-    log(f"Whisper    : {whisper_model}")
-    log(f"Vosk       : {vosk_model if vosk_enabled else 'disabled'}")
-    log(f"GPU/CUDA   : {'yes' if gpu else 'no'}")
-    log(f"Grammar    : {'yes' if grammar else 'no'}")
-
-    steps_total = 4 + int(vosk_enabled) + int(bool(whisper_model)) + 2  # +copy +shortcut
-    current_step = 0
+    log(f"Platform    : {OS} ({platform.version()})")
+    log(f"Python      : {platform.python_version()} @ {python_exe()}")
+    log(f"Install dir : {install_dir}")
+    log(f"Whisper     : {whisper_model}")
+    log(f"Vosk        : {vosk_model if vosk_enabled else 'disabled'}")
+    log(f"GPU/CUDA    : {'yes' if gpu else 'no'}")
+    log(f"Grammar     : {'yes' if grammar else 'no'}")
+    log(f"Noise NR    : {'yes' if noise else 'no (install later via Update window)'}")
+    log(f"Translation : {'yes' if translation else 'no (install later via Update window)'}")
+    log(f"LLM/Summary : {'yes' if llm else 'no (install later via Update window)'}")
+    log(f"WebRTC VAD  : {'yes' if vad else 'no'}")
+    log(f"LAN chat    : {'enabled (port ' + str(cfg.get('chat_server_port', 55300)) + ')' if chat_enabled else 'disabled'}")
+    log(f"Android SSE : {'enabled (port ' + str(cfg.get('android_stream_port', 55301)) + ')' if android_enabled else 'disabled'}")
 
     # Step 1 — System packages
-    current_step += 1
-    step(current_step, "System Dependencies")
+    step(1, "System Dependencies")
     try:
         if OS == "Windows":
             install_system_deps_windows()
@@ -589,22 +762,22 @@ def run_install(cfg: dict):
         err("Continuing — some features may not work without system packages.")
 
     # Step 2 — pip
-    current_step += 1
-    step(current_step, "Python Package Manager")
+    step(2, "Python Package Manager")
     ensure_pip()
 
     # Step 3 — Python packages
-    current_step += 1
-    step(current_step, "Python Packages")
-    if not grammar:
-        COMMON_PACKAGES[:] = [p for p in COMMON_PACKAGES
-                               if p not in ("happytransformer<4.0.0", "transformers")]
-        warn("Grammar correction packages skipped (disabled in config).")
-    install_python_packages(gpu=gpu)
+    step(3, "Python Packages")
+    install_python_packages(
+        gpu=gpu,
+        grammar=grammar,
+        noise=noise,
+        translation=translation,
+        llm=llm,
+        vad=vad,
+    )
 
     # Step 4 — Copy source files into install_dir
-    current_step += 1
-    step(current_step, "Copying Project Files")
+    step(4, "Copying Project Files")
     script_dir = Path(__file__).parent.resolve()
     try:
         copy_source_files(script_dir, install_dir)
@@ -614,8 +787,7 @@ def run_install(cfg: dict):
 
     # Step 5 — Whisper model
     if whisper_model:
-        current_step += 1
-        step(current_step, f"Whisper Model [{whisper_model}]")
+        step(5, f"Whisper Model [{whisper_model}]")
         try:
             preload_whisper_model(whisper_model, whisper_dir)
         except Exception as e:
@@ -624,8 +796,7 @@ def run_install(cfg: dict):
 
     # Step 6 — Vosk model (optional)
     if vosk_enabled and vosk_model:
-        current_step += 1
-        step(current_step, f"Vosk Model [{vosk_model}]")
+        step(6, f"Vosk Model [{vosk_model}]")
         try:
             install_vosk_model(vosk_model, vosk_dir)
         except Exception as e:
@@ -633,23 +804,33 @@ def run_install(cfg: dict):
             warn("You can retry by running: python install.py --vosk-only")
 
     # Step 7 — Write config
-    current_step += 1
-    step(current_step, "Writing Configuration")
+    step(7, "Writing Configuration")
     try:
         write_runtime_config(cfg, install_dir)
     except Exception as e:
         warn(f"Unable to write config: {e}")
-        warn("You can retry by running: python install.py --interactive")
 
     # Step 8 — Desktop shortcut
-    current_step += 1
-    step(current_step, "Creating Desktop Shortcut")
+    step(8, "Creating Desktop Shortcut")
     try:
         create_shortcut(install_dir, script_dir)
     except Exception as e:
         warn(f"Shortcut creation failed: {e}")
-		
-    # ── Done ────────────────────────────────────────────────────────
+
+    # ── Done ────────────────────────────────────────────────────────────────────
+    optional_installed = [
+        name for name, flag in [
+            ("noisereduce", noise), ("deep-translator", translation),
+            ("ollama + sumy + nltk", llm), ("webrtcvad", vad),
+        ] if flag
+    ]
+    optional_skipped = [
+        name for name, flag in [
+            ("noisereduce", noise), ("deep-translator", translation),
+            ("ollama + sumy + nltk", llm), ("webrtcvad", vad),
+        ] if not flag
+    ]
+
     print(f"""
 {GREEN}╔══════════════════════════════════════════════════════╗
 ║   Installation complete!                             ║
@@ -661,16 +842,45 @@ def run_install(cfg: dict):
   Whisper models:  {CYAN}{whisper_dir}{NC}
   Vosk models:     {CYAN}{vosk_dir if vosk_enabled else "N/A"}{NC}
 """)
+    if optional_installed:
+        ok(f"Optional packages installed: {', '.join(optional_installed)}")
+    if optional_skipped:
+        warn(
+            f"Skipped optional packages: {', '.join(optional_skipped)}\n"
+            "  Install them later from the app's Update & Repair window,\n"
+            "  or re-run:  python install.py --interactive"
+        )
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Spoaken Installer")
+    parser = argparse.ArgumentParser(
+        description="Spoaken Installer",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python install.py --interactive              # full guided setup
+  python install.py --config my_config.json   # re-run from saved config
+  python install.py --noise --translation     # add optional packages to existing install
+  python install.py --vosk-only               # re-download vosk model only
+        """,
+    )
     parser.add_argument("--config",       default="spoaken_config.json",
                         help="Path to JSON configuration file")
     parser.add_argument("--interactive",  action="store_true",
                         help="Run interactive CLI configuration")
     parser.add_argument("--vosk-only",    action="store_true",
                         help="Only install/re-download the Vosk model from config")
+    # Optional feature flags — can be used without --interactive
+    parser.add_argument("--noise",        action="store_true",
+                        help="Install noisereduce for noise suppression")
+    parser.add_argument("--translation",  action="store_true",
+                        help="Install deep-translator for the translate command")
+    parser.add_argument("--llm",          action="store_true",
+                        help="Install ollama, sumy, nltk, scikit-learn for LLM + summarization")
+    parser.add_argument("--no-vad",       action="store_true",
+                        help="Skip webrtcvad installation (use energy-gate fallback instead)")
+    parser.add_argument("--chat",         action="store_true",
+                        help="Enable LAN chat server in the written config")
     args = parser.parse_args()
 
     # Determine config
@@ -686,6 +896,18 @@ if __name__ == "__main__":
         if ans in ("n", "no"):
             sys.exit(0)
         cfg = interactive_config()
+
+    # CLI flags override config file values
+    if args.noise:
+        cfg["noise"] = True
+    if args.translation:
+        cfg["translation"] = True
+    if args.llm:
+        cfg["llm"] = True
+    if args.no_vad:
+        cfg["vad"] = False
+    if args.chat:
+        cfg["chat_server_enabled"] = True
 
     # Vosk-only mode
     if args.vosk_only:
