@@ -54,10 +54,15 @@ TXT_OK     = "#24c45e"
 TXT_ERR    = "#e03535"
 TXT_CONS   = "#007bff"
 
-# Neon-teal update button
+# Neon-teal update button  (pip packages)
 BTN_UPDATE      = "#00e5cc"
 BTN_UPDATE_H    = "#00c8b0"
 BTN_UPDATE_TXT  = "#000000"
+
+# Indigo/violet — Spoaken app update button  (visually distinct from pip update)
+BTN_SPOAKEN     = "#5c35d4"
+BTN_SPOAKEN_H   = "#7048f0"
+BTN_SPOAKEN_TXT = "#ffffff"
 
 FONT_MONO  = ("Courier New", 10)
 FONT_UI    = ("Segoe UI",    11)
@@ -65,6 +70,10 @@ FONT_SMALL = ("Segoe UI",     9)
 FONT_TITLE = ("Segoe UI Semibold", 13)
 
 _OS = platform.system()   # Windows | Darwin | Linux
+
+GITHUB_REPO = "https://github.com/daltyn-maker/Spoaken.git"
+GITHUB_REPO_API = "https://api.github.com/repos/daltyn-maker/Spoaken"
+GITHUB_ZIP_URL  = "https://github.com/daltyn-maker/Spoaken/archive/refs/heads/main.zip"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -125,16 +134,39 @@ class DownloadProgressWindow(ctk.CTkToplevel):
         # ── Title bar row ──────────────────────────────────────────────────────
         hf = ctk.CTkFrame(self, fg_color=BG_PANEL, corner_radius=0)
         hf.grid(row=0, column=0, sticky="ew")
-        hf.grid_columnconfigure(0, weight=1)
+        hf.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(
-            hf, text=f"◈  {title}",
-            font=FONT_TITLE, text_color=TXT_TEAL, anchor="w",
-        ).grid(row=0, column=0, padx=14, pady=(10, 6), sticky="w")
+        # Logo icon
+        _logo_img = None
+        try:
+            from paths import ART_DIR as _art
+            from PIL import Image as _PILImage
+            for _nm in ("logo.png", "logo.ico", "icon.png", "icon.ico"):
+                _lp = _art / _nm
+                if _lp.exists():
+                    _raw = _PILImage.open(_lp).resize((28, 28), _PILImage.LANCZOS)
+                    _logo_img = ctk.CTkImage(light_image=_raw, dark_image=_raw, size=(28, 28))
+                    break
+        except Exception:
+            pass
+
+        if _logo_img:
+            ctk.CTkLabel(hf, image=_logo_img, text="").grid(
+                row=0, column=0, padx=(12, 4), pady=(8, 6), sticky="w"
+            )
+            ctk.CTkLabel(
+                hf, text=title,
+                font=FONT_TITLE, text_color=TXT_TEAL, anchor="w",
+            ).grid(row=0, column=1, padx=(0, 4), pady=(10, 6), sticky="w")
+        else:
+            ctk.CTkLabel(
+                hf, text=title,
+                font=FONT_TITLE, text_color=TXT_TEAL, anchor="w",
+            ).grid(row=0, column=0, columnspan=2, padx=14, pady=(10, 6), sticky="w")
 
         # Window controls row
         btn_row = ctk.CTkFrame(hf, fg_color="transparent")
-        btn_row.grid(row=0, column=1, padx=10, pady=6, sticky="e")
+        btn_row.grid(row=0, column=2, padx=10, pady=6, sticky="e")
 
         _kw = dict(width=28, height=26, corner_radius=4, font=("Segoe UI", 10))
 
@@ -161,7 +193,7 @@ class DownloadProgressWindow(ctk.CTkToplevel):
         ).pack(side="left", padx=(2, 0))
 
         ctk.CTkFrame(hf, height=1, fg_color=BORDER_SUB, corner_radius=0,
-                     ).grid(row=1, column=0, columnspan=2, sticky="ew")
+                     ).grid(row=1, column=0, columnspan=3, sticky="ew")
 
         # ── Status row ─────────────────────────────────────────────────────────
         sf = ctk.CTkFrame(self, fg_color="transparent")
@@ -528,12 +560,12 @@ def _get_latest_version(pip_name: str) -> str | None:
     Returns the version string, or None if the query fails.
     Strips any version constraint (e.g. 'happytransformer<4.0.0' → 'happytransformer').
     """
-    bare = re.split(r"[<>=!]", pip_name)[0].strip()
+    bare_name = re.split(r"[<>=!]", pip_name)[0].strip()
     try:
         import urllib.request, json as _json
-        url = f"https://pypi.org/pypi/{bare}/json"
-        with urllib.request.urlopen(url, timeout=8) as r:
-            data = _json.loads(r.read())
+        url = f"https://pypi.org/pypi/{bare_name}/json"
+        with urllib.request.urlopen(url, timeout=8) as response:
+            data = _json.loads(response.read())
         return data["info"]["version"]
     except Exception:
         return None
@@ -541,9 +573,9 @@ def _get_latest_version(pip_name: str) -> str | None:
 
 def _version_lt(installed: str, latest: str) -> bool:
     """Return True if installed < latest (semver best-effort)."""
-    def _parts(v: str) -> tuple:
+    def _parts(version_str: str) -> tuple:
         try:
-            return tuple(int(x) for x in re.split(r"[.\-]", v)[:3])
+            return tuple(int(x) for x in re.split(r"[.\-]", version_str)[:3])
         except ValueError:
             return (0, 0, 0)
     return _parts(installed) < _parts(latest)
@@ -587,12 +619,31 @@ class SpoakenUpdater(ctk.CTkToplevel):
         # State
         self._pkg_rows   : list[dict] = []   # {pip, import, required, constraint,
                                               #  lbl_status, lbl_installed, lbl_latest}
-        self._busy       = False
-
+        self._busy       = False   # pip / package operations
+        self._app_busy   = False   # Spoaken app update (independent lock)
+        
         self._build_ui()
+        
+        #Icon for toolbar        
+        from paths import ART_DIR
+        _ico = ART_DIR / "logo.ico"
+        _png = ART_DIR / "logo.png"
+        if _ico.exists():
+            try:
+                self.iconbitmap(str(_ico))
+            except Exception:
+                pass
+        if _png.exists():
+            try:
+                img = Image.open(_png).resize((64, 64))
+                self._icon = ImageTk.PhotoImage(img)
+                self.after(200, lambda: self.wm_iconphoto(True, self._icon))
+            except Exception:
+                pass
 
         # Kick off a background version check immediately
         self.after(300, self._check_versions_bg)
+        
 
     # ─────────────────────────────────────────────────────────────────────────
     # Layout
@@ -605,12 +656,35 @@ class SpoakenUpdater(ctk.CTkToplevel):
         # ── Header ─────────────────────────────────────────────────────────────
         hf = ctk.CTkFrame(self, fg_color=BG_PANEL, corner_radius=0)
         hf.grid(row=0, column=0, sticky="ew")
-        hf.grid_columnconfigure(0, weight=1)
+        hf.grid_columnconfigure(1, weight=1)
+
+        # Logo icon (logo.png / logo.ico from ART_DIR)
+        _logo_img = None
+        try:
+            from paths import ART_DIR as _art
+            _pil = __import__("PIL.Image", fromlist=["Image"])
+            for _nm in ("logo.png", "logo.ico", "icon.png", "icon.ico"):
+                _lp = _art / _nm
+                if _lp.exists():
+                    _raw = _pil.open(_lp).resize((36, 36), _pil.LANCZOS)
+                    _logo_img = ctk.CTkImage(light_image=_raw, dark_image=_raw, size=(36, 36))
+                    break
+        except Exception:
+            pass
+
+        if _logo_img:
+            ctk.CTkLabel(hf, image=_logo_img, text="").grid(
+                row=0, column=0, rowspan=2, padx=(14, 6), pady=(8, 8), sticky="w"
+            )
+            _txt_col = 1
+        else:
+            _txt_col = 0
 
         ctk.CTkLabel(
-            hf, text="◈  SPOAKEN  —  Update & Repair",
+            hf, text="SPOAKEN  —  Update & Repair",
             font=FONT_TITLE, text_color=TXT_TEAL, anchor="w",
-        ).grid(row=0, column=0, padx=16, pady=(12, 4), sticky="w")
+        ).grid(row=0, column=_txt_col, padx=(0 if _logo_img else 16, 16),
+               pady=(12, 4), sticky="w")
 
         ctk.CTkLabel(
             hf,
@@ -619,22 +693,23 @@ class SpoakenUpdater(ctk.CTkToplevel):
                 f"  ·  {_OS}  ·  {sys.executable}"
             ),
             font=FONT_SMALL, text_color=TXT_DIM, anchor="w",
-        ).grid(row=1, column=0, padx=16, pady=(0, 10), sticky="w")
+        ).grid(row=1, column=_txt_col, padx=(0 if _logo_img else 16, 16),
+               pady=(0, 10), sticky="w")
 
         ctk.CTkFrame(hf, height=1, fg_color=BORDER_SUB, corner_radius=0,
-                     ).grid(row=2, column=0, sticky="ew")
+                     ).grid(row=2, column=0, columnspan=2, sticky="ew")
 
         # ── Action buttons row ─────────────────────────────────────────────────
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.grid(row=1, column=0, padx=14, pady=10, sticky="ew")
-        for col in (0, 1, 2, 3):
+        for col in (0, 1, 2, 3, 4):
             btn_row.grid_columnconfigure(col, weight=1)
 
-        # ★ THE NEON-TEAL UPDATE BUTTON ★
+        # ★ NEON-TEAL — pip package update ★
         self.btn_update = ctk.CTkButton(
             btn_row,
-            text="⟳  UPDATE",
-            font=("Segoe UI Semibold", 14),
+            text="⟳  UPDATE PKGS",
+            font=("Segoe UI Semibold", 13),
             height=46,
             corner_radius=8,
             fg_color    = BTN_UPDATE,
@@ -642,7 +717,21 @@ class SpoakenUpdater(ctk.CTkToplevel):
             text_color  = BTN_UPDATE_TXT,
             command     = self._on_update,
         )
-        self.btn_update.grid(row=0, column=0, columnspan=2, padx=(0, 4), sticky="ew")
+        self.btn_update.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+
+        # ★ INDIGO — Spoaken application update (separate, independent lock) ★
+        self.btn_spoaken_update = ctk.CTkButton(
+            btn_row,
+            text="⬇  Update Spoaken",
+            font=("Segoe UI Semibold", 13),
+            height=46,
+            corner_radius=8,
+            fg_color    = BTN_SPOAKEN,
+            hover_color = BTN_SPOAKEN_H,
+            text_color  = BTN_SPOAKEN_TXT,
+            command     = self._on_app_update,
+        )
+        self.btn_spoaken_update.grid(row=0, column=1, padx=4, sticky="ew")
 
         ctk.CTkButton(
             btn_row,
@@ -741,6 +830,9 @@ class SpoakenUpdater(ctk.CTkToplevel):
 
         # ── Model installer section ────────────────────────────────────────────
         self._build_model_section()
+
+        # ── Spoaken app update section ─────────────────────────────────────────
+        self._build_app_update_section()
 
     def _build_model_section(self):
         """Model downloader — Vosk, Whisper, and Ollama LLM pickers."""
@@ -935,8 +1027,7 @@ class SpoakenUpdater(ctk.CTkToplevel):
                 text=pkg_msg,
                 text_color=TXT_OK if has_pkg else TXT_WARN,
             ))
-        import threading as _t
-        _t.Thread(target=_check, daemon=True).start()
+        threading.Thread(target=_check, daemon=True).start()
 
     def _on_pull_llm(self):
         """Run 'ollama pull <model>' for the selected LLM."""
@@ -1083,13 +1174,30 @@ class SpoakenUpdater(ctk.CTkToplevel):
     # Logging
     # ─────────────────────────────────────────────────────────────────────────
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Thread-safe UI helpers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _safe_configure(self, widget, **kwargs):
+        """Configure a widget only if this window and the widget still exist."""
+        try:
+            if self.winfo_exists() and widget.winfo_exists():
+                widget.configure(**kwargs)
+        except Exception:
+            pass
+
     def _log(self, msg: str):
         """Append a line to the output log (thread-safe via after())."""
         def _insert():
-            self._log_box.configure(state="normal")
-            self._log_box.insert("end", msg + "\n")
-            self._log_box.see("end")
-            self._log_box.configure(state="disabled")
+            try:
+                if not self.winfo_exists():
+                    return
+                self._log_box.configure(state="normal")
+                self._log_box.insert("end", msg + "\n")
+                self._log_box.see("end")
+                self._log_box.configure(state="disabled")
+            except Exception:
+                pass
         if threading.current_thread() is threading.main_thread():
             _insert()
         else:
@@ -1110,42 +1218,58 @@ class SpoakenUpdater(ctk.CTkToplevel):
         threading.Thread(target=self._check_versions_worker, daemon=True).start()
 
     def _check_versions_worker(self):
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         self._log("Checking installed versions …")
         for row in self._pkg_rows:
-            iv = _get_installed_version(row["import"])
-            row["installed_ver"] = iv
-            self.after(0, row["lbl_installed"].configure,
-                       {"text": iv or "not installed",
-                        "text_color": TXT_OK if iv else TXT_ERR})
+            installed_version = _get_installed_version(row["import"])
+            row["installed_ver"] = installed_version
+            label_text  = installed_version or "not installed"
+            label_color = TXT_OK if installed_version else TXT_ERR
+            lbl = row["lbl_installed"]
+            self.after(0, lambda lb=lbl, t=label_text, c=label_color:
+                       self._safe_configure(lb, text=t, text_color=c))
 
-        self._log("Fetching latest versions from PyPI …")
-        for row in self._pkg_rows:
-            lv = _get_latest_version(row["pip"])
-            row["latest_ver"] = lv
-            self.after(0, row["lbl_latest"].configure,
-                       {"text": lv or "?",
-                        "text_color": TXT_MAIN if lv else TXT_DIM})
+        self._log(f"Fetching latest versions from PyPI (concurrent) …")
+
+        # Fetch all latest versions in parallel — much faster than serial HTTP
+        def _fetch(row):
+            return row, _get_latest_version(row["pip"])
+
+        with ThreadPoolExecutor(max_workers=8, thread_name_prefix="pypi") as pool:
+            futures = {pool.submit(_fetch, row): row for row in self._pkg_rows}
+            for future in as_completed(futures):
+                try:
+                    row, latest_version = future.result()
+                except Exception:
+                    row = futures[future]
+                    latest_version = None
+                row["latest_ver"] = latest_version
+                label_text  = latest_version or "?"
+                label_color = TXT_MAIN if latest_version else TXT_DIM
+                lbl = row["lbl_latest"]
+                self.after(0, lambda lb=lbl, t=label_text, c=label_color:
+                           self._safe_configure(lb, text=t, text_color=c))
 
         # Compute status icons
         for row in self._pkg_rows:
-            iv = row["installed_ver"]
-            lv = row["latest_ver"]
-            con = row["constraint"]
+            installed_version  = row["installed_ver"]
+            latest_version     = row["latest_ver"]
+            version_constraint = row["constraint"]
 
-            if iv is None:
-                icon, colour = "✗", TXT_ERR
-            elif lv and "unknown" not in iv and _version_lt(iv, lv):
-                icon, colour = "↑", TXT_WARN
+            if installed_version is None:
+                status_icon, status_colour = "✗", TXT_ERR
+            elif latest_version and "unknown" not in installed_version and _version_lt(installed_version, latest_version):
+                status_icon, status_colour = "↑", TXT_WARN
             else:
-                icon, colour = "✔", TXT_OK
+                status_icon, status_colour = "✔", TXT_OK
 
-            # Respect version constraint: if constraint says <4.0.0 and
-            # latest is ≥4.0.0, the installed version might already be fine
-            if con and lv and iv:
-                icon, colour = "✔", TXT_OK   # pinned — leave it
+            if version_constraint and latest_version and installed_version:
+                status_icon, status_colour = "✔", TXT_OK   # pinned — leave it
 
-            self.after(0, row["lbl_status"].configure,
-                       {"text": icon, "text_color": colour})
+            lbl = row["lbl_status"]
+            self.after(0, lambda lb=lbl, i=status_icon, c=status_colour:
+                       self._safe_configure(lb, text=i, text_color=c))
 
         upgradeable = sum(
             1 for r in self._pkg_rows
@@ -1205,12 +1329,12 @@ class SpoakenUpdater(ctk.CTkToplevel):
             return
         # Reset icons
         for row in self._pkg_rows:
-            self.after(0, row["lbl_status"].configure,
-                       {"text": "…", "text_color": TXT_DIM})
-            self.after(0, row["lbl_installed"].configure,
-                       {"text": "—", "text_color": TXT_DIM})
-            self.after(0, row["lbl_latest"].configure,
-                       {"text": "—", "text_color": TXT_DIM})
+            lbl_s = row["lbl_status"]
+            lbl_i = row["lbl_installed"]
+            lbl_l = row["lbl_latest"]
+            self.after(0, lambda lb=lbl_s: self._safe_configure(lb, text="…", text_color=TXT_DIM))
+            self.after(0, lambda lb=lbl_i: self._safe_configure(lb, text="—", text_color=TXT_DIM))
+            self.after(0, lambda lb=lbl_l: self._safe_configure(lb, text="—", text_color=TXT_DIM))
         self._check_versions_bg()
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1230,8 +1354,8 @@ class SpoakenUpdater(ctk.CTkToplevel):
         for i, row in enumerate(rows, 1):
             pkg = row["pip"]
             self._log(f"[{i}/{total}]  {pkg}")
-            self.after(0, row["lbl_status"].configure,
-                       {"text": "⟳", "text_color": TXT_TEAL})
+            lbl_s = row["lbl_status"]
+            self.after(0, lambda lb=lbl_s: self._safe_configure(lb, text="⟳", text_color=TXT_TEAL))
 
             ok = _pip_install(pkg, log_fn=self._log, upgrade=not force)
             if not ok:
@@ -1242,14 +1366,12 @@ class SpoakenUpdater(ctk.CTkToplevel):
                 # Refresh installed version
                 new_ver = _get_installed_version(row["import"]) or "installed"
                 row["installed_ver"] = new_ver
-                self.after(0, row["lbl_installed"].configure,
-                           {"text": new_ver, "text_color": TXT_OK})
-                self.after(0, row["lbl_status"].configure,
-                           {"text": "✔", "text_color": TXT_OK})
+                lbl_i = row["lbl_installed"]
+                self.after(0, lambda lb=lbl_i, v=new_ver: self._safe_configure(lb, text=v, text_color=TXT_OK))
+                self.after(0, lambda lb=lbl_s: self._safe_configure(lb, text="✔", text_color=TXT_OK))
             else:
                 failed.append(pkg)
-                self.after(0, row["lbl_status"].configure,
-                           {"text": "✗", "text_color": TXT_ERR})
+                self.after(0, lambda lb=lbl_s: self._safe_configure(lb, text="✗", text_color=TXT_ERR))
 
         self._log("\n" + "─" * 50)
         self._log(
@@ -1277,24 +1399,487 @@ class SpoakenUpdater(ctk.CTkToplevel):
     def _set_busy(self, busy: bool, label: str = ""):
         self._busy = busy
         def _apply():
-            if busy:
-                self.btn_update.configure(
-                    text=f"⟳  {label}" if label else "⟳  Working …",
-                    state="disabled",
-                    fg_color="#008a7a",
-                )
-            else:
-                self.btn_update.configure(
-                    text="⟳  UPDATE",
-                    state="normal",
-                    fg_color=BTN_UPDATE,
-                )
+            try:
+                if not self.winfo_exists():
+                    return
+                if busy:
+                    self.btn_update.configure(
+                        text=f"⟳  {label}" if label else "⟳  Working …",
+                        state="disabled",
+                        fg_color="#008a7a",
+                    )
+                else:
+                    self.btn_update.configure(
+                        text="⟳  UPDATE PKGS",
+                        state="normal",
+                        fg_color=BTN_UPDATE,
+                    )
+            except Exception:
+                pass
+        self.after(0, _apply)
+
+    def _set_app_busy(self, busy: bool, label: str = ""):
+        """Independent busy state for the Spoaken app update button.
+
+        Does NOT block pip operations — the two locks are fully separate so
+        you can check for package updates and download a Spoaken release at
+        the same time without either button disabling the other.
+        """
+        self._app_busy = busy
+        def _apply():
+            try:
+                if not self.winfo_exists():
+                    return
+                if busy:
+                    self.btn_spoaken_update.configure(
+                        text=f"⬇  {label}" if label else "⬇  Updating …",
+                        state="disabled",
+                        fg_color="#3a1f90",
+                    )
+                else:
+                    self.btn_spoaken_update.configure(
+                        text="⬇  Update Spoaken",
+                        state="normal",
+                        fg_color=BTN_SPOAKEN,
+                    )
+            except Exception:
+                pass
         self.after(0, _apply)
 
 
     # ─────────────────────────────────────────────────────────────────────────
     # Model installer
     # ─────────────────────────────────────────────────────────────────────────
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Spoaken app update  (GitHub)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _build_app_update_section(self):
+        """
+        Card that shows current Spoaken commit/tag vs GitHub latest,
+        with a one-click pull-and-restart flow.
+
+        Strategy (no git required):
+          • If git is on PATH → git pull
+          • Otherwise         → download main.zip, extract over install dir,
+                                preserve user config / models
+        """
+        self.grid_rowconfigure(8, weight=0)
+        self.grid_rowconfigure(9, weight=0)
+
+        sep = ctk.CTkFrame(self, height=1, fg_color=BORDER_SUB, corner_radius=0)
+        sep.grid(row=8, column=0, padx=14, pady=(0, 4), sticky="ew")
+
+        ctk.CTkLabel(
+            self, text="Spoaken Application Update",
+            font=FONT_TITLE, text_color=TXT_TEAL, anchor="w",
+        ).grid(row=9, column=0, padx=16, pady=(4, 0), sticky="w")
+
+        app_card = ctk.CTkFrame(
+            self, fg_color=BG_CARD,
+            border_color=BORDER_SUB, border_width=1, corner_radius=8,
+        )
+        app_card.grid(row=10, column=0, padx=14, pady=(4, 14), sticky="ew")
+        app_card.grid_columnconfigure(1, weight=1)
+
+        # ── Row 0: source URL display ─────────────────────────────────────────
+        ctk.CTkLabel(app_card, text="Source",
+                     font=FONT_SMALL, text_color=TXT_DIM, anchor="w",
+                     ).grid(row=0, column=0, padx=(12, 6), pady=(10, 2), sticky="w")
+        ctk.CTkLabel(
+            app_card,
+            text=GITHUB_REPO,
+            font=("Courier New", 8), text_color="#4a70a0", anchor="w",
+        ).grid(row=0, column=1, columnspan=2, padx=(0, 12), pady=(10, 2), sticky="w")
+
+        # ── Row 1: current version ────────────────────────────────────────────
+        ctk.CTkLabel(app_card, text="Local",
+                     font=FONT_SMALL, text_color=TXT_DIM, anchor="w",
+                     ).grid(row=1, column=0, padx=(12, 6), pady=(2, 2), sticky="w")
+        self._lbl_app_local = ctk.CTkLabel(
+            app_card, text="checking …",
+            font=("Courier New", 9), text_color=TXT_DIM, anchor="w",
+        )
+        self._lbl_app_local.grid(row=1, column=1, padx=(0, 4), pady=(2, 2), sticky="w")
+
+        # ── Row 2: remote version ─────────────────────────────────────────────
+        ctk.CTkLabel(app_card, text="Remote",
+                     font=FONT_SMALL, text_color=TXT_DIM, anchor="w",
+                     ).grid(row=2, column=0, padx=(12, 6), pady=(2, 2), sticky="w")
+        self._lbl_app_remote = ctk.CTkLabel(
+            app_card, text="checking …",
+            font=("Courier New", 9), text_color=TXT_DIM, anchor="w",
+        )
+        self._lbl_app_remote.grid(row=2, column=1, padx=(0, 4), pady=(2, 2), sticky="w")
+
+        # ── Row 3: status ─────────────────────────────────────────────────────
+        self._lbl_app_status = ctk.CTkLabel(
+            app_card, text="",
+            font=FONT_SMALL, text_color=TXT_DIM, anchor="w", wraplength=380,
+        )
+        self._lbl_app_status.grid(row=3, column=0, columnspan=3,
+                                   padx=12, pady=(2, 4), sticky="w")
+
+        # ── Row 4: buttons ────────────────────────────────────────────────────
+        app_btn_row = ctk.CTkFrame(app_card, fg_color="transparent")
+        app_btn_row.grid(row=4, column=0, columnspan=3,
+                          padx=8, pady=(2, 10), sticky="ew")
+        for c in range(4):
+            app_btn_row.grid_columnconfigure(c, weight=1)
+
+        # Check button
+        ctk.CTkButton(
+            app_btn_row, text="↺  Check",
+            font=FONT_SMALL, height=34, corner_radius=6,
+            fg_color="#0d3a40", hover_color="#145060",
+            command=self._check_app_version_bg,
+        ).grid(row=0, column=0, padx=(0, 3), sticky="ew")
+
+        # Update (git pull or zip download)
+        self.btn_app_update = ctk.CTkButton(
+            app_btn_row,
+            text="⬇  Update Spoaken",
+            font=("Segoe UI Semibold", 12), height=34, corner_radius=6,
+            fg_color=BTN_UPDATE, hover_color=BTN_UPDATE_H, text_color=BTN_UPDATE_TXT,
+            command=self._on_app_update,
+        )
+        self.btn_app_update.grid(row=0, column=1, padx=3, sticky="ew")
+
+        # Open in browser
+        ctk.CTkButton(
+            app_btn_row, text="⊞  GitHub",
+            font=FONT_SMALL, height=34, corner_radius=6,
+            fg_color="#1a2d50", hover_color="#253a70",
+            command=lambda: __import__("webbrowser").open(GITHUB_REPO),
+        ).grid(row=0, column=2, padx=3, sticky="ew")
+
+        # Changelog
+        ctk.CTkButton(
+            app_btn_row, text="📋  Commits",
+            font=FONT_SMALL, height=34, corner_radius=6,
+            fg_color="#1a1a40", hover_color="#252560",
+            command=lambda: __import__("webbrowser").open(
+                "https://github.com/daltyn-maker/Spoaken/commits/main"
+            ),
+        ).grid(row=0, column=3, padx=(3, 0), sticky="ew")
+
+        # Initial check
+        self.after(800, self._check_app_version_bg)
+
+    def _get_install_dir(self) -> Path:
+        """Return the root directory of the Spoaken installation."""
+        try:
+            from paths import ROOT_DIR
+            return Path(ROOT_DIR)
+        except ImportError:
+            return Path(__file__).resolve().parent
+
+    def _get_local_version(self) -> str:
+        """Return local git describe / commit hash, or 'unknown'."""
+        install_dir = self._get_install_dir()
+        git_exe = shutil.which("git")
+        if git_exe:
+            for cmd in (
+                [git_exe, "describe", "--tags", "--always", "--dirty"],
+                [git_exe, "rev-parse", "--short", "HEAD"],
+            ):
+                try:
+                    result = subprocess.run(
+                        cmd, cwd=str(install_dir),
+                        capture_output=True, text=True, timeout=6,
+                    )
+                    if result.returncode == 0:
+                        return result.stdout.strip()
+                except Exception:
+                    pass
+
+        # No git — try reading a VERSION file or __version__ attribute
+        for vfile in (install_dir / "VERSION", install_dir / "version.txt"):
+            if vfile.exists():
+                return vfile.read_text().strip()
+        try:
+            import spoaken_version  # type: ignore
+            return getattr(spoaken_version, "__version__", "unknown")
+        except ImportError:
+            pass
+        return "unknown (no git)"
+
+    def _get_remote_version(self) -> tuple:
+        """
+        Return (tag_or_sha: str, commit_date: str, behind_count: int).
+        Uses the GitHub API (no auth needed for public repos).
+        """
+        import urllib.request, json as _json
+        try:
+            # Latest commit on main
+            url = f"{GITHUB_REPO_API}/commits/main"
+            with urllib.request.urlopen(url, timeout=10) as r:
+                data    = _json.loads(r.read())
+            sha     = data["sha"][:8]
+            date    = data["commit"]["committer"]["date"][:10]
+            msg     = data["commit"]["message"].split("\n")[0][:60]
+            return sha, f"{sha}  ({date})  {msg}", 0
+        except Exception as exc:
+            return "", f"unavailable ({exc})", -1
+
+    def _check_app_version_bg(self):
+        """Spawn a background thread to check app versions."""
+        self._safe_configure(self._lbl_app_local,  text="checking …", text_color=TXT_DIM)
+        self._safe_configure(self._lbl_app_remote, text="checking …", text_color=TXT_DIM)
+        self._safe_configure(self._lbl_app_status, text="",           text_color=TXT_DIM)
+        threading.Thread(target=self._check_app_version_worker, daemon=True).start()
+
+    def _check_app_version_worker(self):
+        local       = self._get_local_version()
+        sha, remote, err = self._get_remote_version()
+
+        def _update():
+            self._safe_configure(self._lbl_app_local, text=local,
+                                 text_color=TXT_MAIN)
+            self._safe_configure(self._lbl_app_remote, text=remote,
+                                 text_color=TXT_MAIN if sha else TXT_WARN)
+
+            if err == -1:
+                self._safe_configure(self._lbl_app_status,
+                                     text="  ✗ Could not reach GitHub — no internet?",
+                                     text_color=TXT_ERR)
+                return
+
+            if sha and local != "unknown (no git)" and sha in local:
+                self._safe_configure(self._lbl_app_status,
+                                     text="  ✔ Spoaken is up to date",
+                                     text_color=TXT_OK)
+            else:
+                self._safe_configure(self._lbl_app_status,
+                                     text="  ↑ An update may be available — click ⬇ Update Spoaken",
+                                     text_color=TXT_WARN)
+
+        self.after(0, _update)
+
+    def _on_app_update(self):
+        """Decide whether to git-pull or download zip, then run in background.
+
+        Uses ``_app_busy`` — fully independent from the pip ``_busy`` flag, so
+        this button is never blocked by a package check or install in progress.
+        """
+        if self._app_busy:
+            self._log("A Spoaken update is already in progress — please wait.")
+            return
+
+        install_dir = self._get_install_dir()
+        git_exe     = shutil.which("git")
+
+        if git_exe:
+            # Check if .git directory exists in install_dir
+            git_dir = install_dir / ".git"
+            if git_dir.is_dir():
+                self._start_app_update_git(install_dir, git_exe)
+                return
+
+        # Fall back to zip download
+        self._start_app_update_zip(install_dir)
+
+    def _start_app_update_git(self, install_dir: Path, git_exe: str):
+        """Update via git pull."""
+        self._set_app_busy(True, "Updating via git …")
+        dpw = DownloadProgressWindow(self, title="Spoaken — Git Update")
+
+        def _worker(dpw=dpw):
+            try:
+                dpw.log(f"git pull  in  {install_dir}")
+                dpw.log(f"Remote: {GITHUB_REPO}\n")
+                dpw.set_progress(0.1, "Fetching …")
+
+                # First fetch to check for conflicts
+                proc = subprocess.run(
+                    [git_exe, "fetch", "origin"],
+                    cwd=str(install_dir), capture_output=True, text=True, timeout=60,
+                )
+                dpw.log(proc.stdout or "")
+                if proc.stderr:
+                    dpw.log(proc.stderr)
+
+                dpw.set_progress(0.4, "Pulling …")
+
+                # Stash any local changes so pull doesn't fail
+                subprocess.run(
+                    [git_exe, "stash", "--include-untracked"],
+                    cwd=str(install_dir), capture_output=True, text=True, timeout=15,
+                )
+
+                proc2 = subprocess.run(
+                    [git_exe, "pull", "--ff-only", "origin", "main"],
+                    cwd=str(install_dir), capture_output=True, text=True, timeout=120,
+                )
+                dpw.log(proc2.stdout or "")
+                if proc2.stderr:
+                    dpw.log(proc2.stderr)
+
+                dpw.set_progress(0.9, "Checking result …")
+
+                if proc2.returncode == 0:
+                    dpw.log("\n✔  Spoaken updated successfully!")
+                    dpw.log("   Restart Spoaken to use the new version.")
+                    dpw.set_progress(1.0, "Done ✔")
+                    dpw.mark_done(True)
+                    # Refresh version labels
+                    self.after(500, self._check_app_version_bg)
+                    # Prompt restart
+                    self.after(800, self._prompt_restart)
+                else:
+                    dpw.log(f"\n✗  git pull exited with code {proc2.returncode}")
+                    dpw.log("   Try downloading the zip instead (remove .git folder).")
+                    dpw.mark_done(False)
+            except Exception as exc:
+                dpw.log(f"\n✗  Error: {exc}")
+                dpw.mark_done(False)
+            finally:
+                self._set_app_busy(False)
+
+        dpw.start_download(_worker)
+
+    def _start_app_update_zip(self, install_dir: Path):
+        """Update by downloading the GitHub archive zip."""
+        self._set_app_busy(True, "Downloading update …")
+        dpw = DownloadProgressWindow(self, title="Spoaken — Download Update")
+
+        def _worker(dpw=dpw):
+            import urllib.request, zipfile, tempfile, shutil as _shutil
+
+            # Files/dirs to preserve (never overwrite with repo defaults)
+            _PRESERVE = {
+                "spoaken_config.json",
+                "user_config.json",
+                "models",
+                "Logs",
+                "Transcripts",
+            }
+
+            tmp_zip = ""
+            tmp_dir = ""
+            try:
+                dpw.log(f"Downloading:  {GITHUB_ZIP_URL}")
+                dpw.log(f"Installing to: {install_dir}\n")
+                dpw.set_progress(0.05, "Starting download …")
+
+                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
+                    tmp_zip = f.name
+
+                def _hook(count, block, total):
+                    if dpw.is_cancelled():
+                        raise RuntimeError("Cancelled by user")
+                    if total > 0:
+                        pct = min(0.75, count * block / total * 0.75)
+                        dpw.set_progress(pct, f"Downloading … {pct/0.75*100:.0f}%")
+
+                urllib.request.urlretrieve(GITHUB_ZIP_URL, tmp_zip, _hook)
+                dpw.log("Download complete.")
+                dpw.set_progress(0.78, "Extracting …")
+
+                tmp_dir = tempfile.mkdtemp(prefix="spoaken_update_")
+                with zipfile.ZipFile(tmp_zip, "r") as zf:
+                    zf.extractall(tmp_dir)
+
+                # GitHub archives extract to "Spoaken-main/"
+                extracted_roots = [
+                    p for p in Path(tmp_dir).iterdir() if p.is_dir()
+                ]
+                if not extracted_roots:
+                    raise RuntimeError("Zip extraction produced no directories")
+                src_root = extracted_roots[0]
+
+                dpw.log(f"Extracted to: {src_root}")
+                dpw.set_progress(0.82, "Installing files …")
+
+                # Copy new files, skipping preserved paths
+                copied = 0
+                for src_file in src_root.rglob("*"):
+                    rel = src_file.relative_to(src_root)
+                    parts = rel.parts
+                    if parts and parts[0] in _PRESERVE:
+                        continue
+                    dest_file = install_dir / rel
+                    if src_file.is_dir():
+                        dest_file.mkdir(parents=True, exist_ok=True)
+                    else:
+                        dest_file.parent.mkdir(parents=True, exist_ok=True)
+                        _shutil.copy2(str(src_file), str(dest_file))
+                        copied += 1
+
+                dpw.log(f"Installed {copied} files.")
+                dpw.set_progress(1.0, "Done ✔")
+                dpw.log("\n✔  Spoaken updated successfully!")
+                dpw.log("   Restart Spoaken to use the new version.")
+                dpw.mark_done(True)
+                self.after(500, self._check_app_version_bg)
+                self.after(800, self._prompt_restart)
+
+            except Exception as exc:
+                dpw.log(f"\n✗  Update failed: {exc}")
+                dpw.mark_done(False)
+            finally:
+                # Cleanup temps
+                for p in (tmp_zip, tmp_dir):
+                    if p:
+                        try:
+                            if Path(p).is_dir():
+                                import shutil as _s
+                                _s.rmtree(p, ignore_errors=True)
+                            else:
+                                Path(p).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                self._set_app_busy(False)
+
+        dpw.start_download(_worker)
+
+    def _prompt_restart(self):
+        """Show a small dialog offering to restart Spoaken."""
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Restart?")
+        dlg.configure(fg_color=BG_PANEL)
+        dlg.geometry("300x130")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        ctk.CTkLabel(
+            dlg, text="✔  Update installed!",
+            font=("Segoe UI Semibold", 12), text_color=TXT_OK,
+        ).pack(pady=(18, 2))
+        ctk.CTkLabel(
+            dlg, text="Restart Spoaken to apply the update.",
+            font=FONT_SMALL, text_color=TXT_DIM,
+        ).pack(pady=(0, 10))
+
+        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_row.pack()
+
+        def _restart():
+            try:
+                dlg.destroy()
+                self.destroy()
+            except Exception:
+                pass
+            # Re-launch the same Python interpreter with the same args
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        ctk.CTkButton(
+            btn_row, text="Restart Now", width=110,
+            fg_color=BTN_UPDATE, hover_color=BTN_UPDATE_H, text_color=BTN_UPDATE_TXT,
+            command=_restart,
+        ).pack(side="left", padx=6)
+        ctk.CTkButton(
+            btn_row, text="Later", width=70,
+            fg_color=BG_CARD, hover_color=BORDER_ACT, text_color=TXT_DIM,
+            command=dlg.destroy,
+        ).pack(side="left", padx=6)
 
     def _on_force_quit(self):
         """Emergency force-quit with confirmation — for hung installs."""
@@ -1510,13 +2095,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
-    
-    
-    
-    
-    
-    
-    
-    
     
