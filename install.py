@@ -45,7 +45,7 @@ NC     = "\033[0m"
 
 BANNER = f"""
 {CYAN}╔══════════════════════════════════════════════════════╗
-║         SPOAKEN — Installer v1.0.0                   ║
+║         SPOAKEN — Installer v2.1.0                   ║
 ║         Voice-to-Text Engine · Whisper + Vosk        ║
 ╚══════════════════════════════════════════════════════╝{NC}
 """
@@ -62,6 +62,23 @@ def bar(pct, width=40):
 
 # ─── Platform detection ───────────────────────────────────────────────────────
 OS = platform.system()   # Windows | Darwin | Linux
+
+# ─── Internet connectivity probe ─────────────────────────────────────────────
+def check_internet(timeout: float = 4.0) -> bool:
+    """
+    Return True if the machine has an active internet connection.
+    Tries two well-known hosts so a single firewall rule can't fool it.
+    """
+    import socket
+    for host, port in (("1.1.1.1", 443), ("8.8.8.8", 53)):
+        try:
+            socket.setdefaulttimeout(timeout)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.connect((host, port))
+            return True
+        except OSError:
+            continue
+    return False
 
 def detect_linux_distro():
     for pm in ("apt", "dnf", "pacman"):
@@ -194,19 +211,22 @@ def install_system_deps_linux():
         )
 
     pkg_map = {
-        "apt-get": [
+        "apt": [
             "ffmpeg", "portaudio19-dev", "python3-dev",
             "python3-pip", "python3-tk", "wmctrl",
-            "xdotool", "libgirepository1.0-dev", "pkg-config"
+            "xdotool", "libgirepository1.0-dev", "pkg-config",
+            "tor", "build-essential",
         ],
         "dnf": [
             "ffmpeg", "portaudio-devel", "python3-devel",
             "python3-pip", "python3-tkinter", "wmctrl",
-            "xdotool", "gobject-introspection-devel"
+            "xdotool", "gobject-introspection-devel",
+            "tor", "gcc", "gcc-c++",
         ],
         "pacman": [
             "ffmpeg", "portaudio", "python",
-            "python-pip", "tk", "wmctrl", "xdotool"
+            "python-pip", "tk", "wmctrl", "xdotool",
+            "tor", "base-devel",
         ],
     }
 
@@ -240,62 +260,79 @@ def ensure_pip():
     ok("pip up to date")
 
 # ─── Python packages ──────────────────────────────────────────────────────────
-# ─── Python packages ──────────────────────────────────────────────────────────
+
+# ── Online-only source files ───────────────────────────────────────────────────
+# These files are excluded from the install when running in offline mode.
+# Spoaken starts, transcribes, and writes to windows without any of them.
+ONLINE_ONLY_SOURCE_FILES = {
+    "spoaken_chat_online.py",   # Internet relay server / client
+}
 
 # Always installed — Spoaken will not function without these.
+# All packages here work fully offline after installation.
 COMMON_PACKAGES = [
-    "customtkinter",
-    "Pillow",
-    "faster-whisper",
-    "sounddevice",
-    "numpy",
-    "pyautogui",
-    "rapidfuzz",
-    "websockets",          # required for LAN + online chat
-    "stem",                # required for Tor hidden service / P2P online chat
-    "PySocks",             # Tor SOCKS5 proxy for outbound .onion connections
-    "cryptography",        # Ed25519 identity keys for P2P DID
+    "customtkinter>=5.2.2",
+    "Pillow>=10.0.0",
+    "faster-whisper>=1.0.3",
+    "sounddevice>=0.4.7",
+    "numpy>=1.26.0",
+    "pyautogui>=0.9.54",
+    "rapidfuzz>=3.6.1",
+    "websockets>=12.0",        # LAN chat (works fully offline on the local network)
+    "cryptography>=42.0.0",    # Ed25519 identity keys, TLS, AES-GCM
+]
+
+# Packages that are only meaningful with an active internet connection.
+# Installed in online mode; skipped (with a note) in offline mode.
+ONLINE_ONLY_PACKAGES = [
+    "stem>=1.8.2",             # Tor hidden service control (requires Tor daemon + internet)
+    "PySocks>=1.7.1",          # Tor SOCKS5 proxy for outbound .onion connections
+    "torpy>=1.1.8",            # Pure-Python Tor client (requires internet)
+    "aiohttp>=3.9.0",          # Async HTTP — used by online relay and update checker
+    "aiofiles>=23.2.1",        # Async file I/O for online chat file transfers
+    "deep-translator>=1.11.4", # Google Translate API (cloud, requires internet)
 ]
 
 # Grammar correction — installed unless the user opts out.
 GRAMMAR_PACKAGES = [
     "happytransformer<4.0.0",
-    "transformers",
-    "torch",
+    "transformers>=4.40.0",
+    "torch",                   # version handled separately (CPU vs CUDA)
+    "sentencepiece>=0.2.0",    # required by many T5 tokenizers
+    "protobuf>=4.25.0",        # required by sentencepiece / transformers
 ]
 
 # Noise suppression — optional, improves transcription in noisy rooms.
 NOISE_PACKAGES = [
-    "noisereduce",
-]
-
-# Translation — optional, enables the 'translate' command.
-TRANSLATION_PACKAGES = [
-    "deep-translator",
+    "noisereduce>=3.0.0",
+    "scipy>=1.12.0",           # noisereduce dependency; also useful for audio processing
 ]
 
 # LLM (Ollama client + summarization pipeline) — optional.
+# Ollama itself runs locally; models are pulled once (requires internet at model-download time).
 LLM_PACKAGES = [
-    "ollama",
-    "sumy",
-    "nltk",
-    "scikit-learn",
+    "ollama>=0.2.0",
+    "sumy>=0.11.0",
+    "nltk>=3.8.1",
+    "scikit-learn>=1.4.0",
+    "networkx>=3.3",           # used by some sumy summarizers
 ]
 
 # Better VAD — optional but strongly recommended on systems where it builds cleanly.
 VAD_PACKAGES = [
-    "webrtcvad",
+    "webrtcvad",               # no version pin — prebuilt wheels vary by platform
 ]
 
 PLATFORM_EXTRA = {
-    "Windows": ["pywin32", "pywinauto"],
+    "Windows": ["pywin32>=306", "pywinauto>=0.6.8"],
     "Darwin":  [],
     "Linux":   [],
 }
 
 def install_python_packages(gpu: bool = False, grammar: bool = True,
                              noise: bool = False, translation: bool = False,
-                             llm: bool = False, vad: bool = True):
+                             llm: bool = False, vad: bool = True,
+                             online: bool = True):
     # ── PyTorch (handled separately for CUDA support) ──────────────────────────
     if grammar:
         if gpu and OS == "Windows":
@@ -307,7 +344,7 @@ def install_python_packages(gpu: bool = False, grammar: bool = True,
             pip_run("install", "torch")
         ok("PyTorch installed")
 
-    # ── Core packages ──────────────────────────────────────────────────────────
+    # ── Core packages (offline-safe) ───────────────────────────────────────────
     platform_extras = PLATFORM_EXTRA.get(OS, [])
     core_pkgs = COMMON_PACKAGES + platform_extras
     total_core = len(core_pkgs)
@@ -319,6 +356,21 @@ def install_python_packages(gpu: bool = False, grammar: bool = True,
             ok(pkg)
         except RuntimeError as e:
             warn(f"Could not install {pkg}: {e}")
+
+    # ── Online-only packages ───────────────────────────────────────────────────
+    if online:
+        log(f"Installing {len(ONLINE_ONLY_PACKAGES)} online-feature packages "
+            f"(Tor, aiohttp, deep-translator)...")
+        for pkg in ONLINE_ONLY_PACKAGES:
+            try:
+                pip_run("install", "--upgrade", pkg)
+                ok(pkg)
+            except RuntimeError as e:
+                warn(f"Could not install {pkg}: {e}")
+    else:
+        short_names = ", ".join(p.split(">=")[0].split("<")[0] for p in ONLINE_ONLY_PACKAGES)
+        warn(f"OFFLINE MODE — skipping online-only packages ({short_names}).")
+        warn("  To add them later:  python install.py --online-only")
 
     # ── Grammar packages ───────────────────────────────────────────────────────
     if grammar:
@@ -346,17 +398,13 @@ def install_python_packages(gpu: bool = False, grammar: bool = True,
     else:
         log("Noise suppression skipped (enable later via Update window or --noise flag).")
 
-    # ── Optional: translation ─────────────────────────────────────────────────
+    # ── Optional: translation (online only) ───────────────────────────────────
     if translation:
-        log("Installing translation packages...")
-        for pkg in TRANSLATION_PACKAGES:
-            try:
-                pip_run("install", "--upgrade", pkg)
-                ok(pkg)
-            except RuntimeError as e:
-                warn(f"Could not install {pkg}: {e}")
-    else:
-        log("Translation skipped (enable later via Update window or --translation flag).")
+        if online:
+            log("deep-translator already included in online-only packages above.")
+        else:
+            warn("Translation (deep-translator) requires internet — skipped in offline mode.")
+            warn("  It will be installed automatically if you re-run with --online-only.")
 
     # ── Optional: LLM + summarization ─────────────────────────────────────────
     if llm:
@@ -465,10 +513,13 @@ def install_vosk_model(model_name: str, models_dir: Path):
     ok(f"Vosk model ready at {extract_path}")
 
 # ─── Copy source files into install directory ────────────────────────────────
-def copy_source_files(script_dir: Path, install_dir: Path):
+def copy_source_files(script_dir: Path, install_dir: Path, online: bool = True):
     """
     Copy the 'spoaken' sibling folder (next to install.py) into install_dir,
     so install_dir/spoaken/ contains the full application source.
+
+    In offline mode, files listed in ONLINE_ONLY_SOURCE_FILES are excluded
+    so there is no dead code referencing cloud APIs that can never be reached.
     """
     src = script_dir / "spoaken"
 
@@ -484,8 +535,28 @@ def copy_source_files(script_dir: Path, install_dir: Path):
         shutil.rmtree(dest)
 
     install_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dest)
-    ok(f"Copied spoaken/ → {dest}")
+
+    if online:
+        # Full copy — include everything
+        shutil.copytree(src, dest)
+        ok(f"Copied spoaken/ → {dest}  (online mode — all files included)")
+    else:
+        # Selective copy — exclude online-only source files
+        skipped = []
+
+        def _ignore(directory, contents):
+            ignored = set()
+            for name in contents:
+                if name in ONLINE_ONLY_SOURCE_FILES:
+                    ignored.add(name)
+                    skipped.append(name)
+            return ignored
+
+        shutil.copytree(src, dest, ignore=_ignore)
+        ok(f"Copied spoaken/ → {dest}  (offline mode)")
+        if skipped:
+            warn(f"Excluded online-only source files: {', '.join(skipped)}")
+            warn("  To restore them later: python install.py --online-only")
 
 
 # ─── Desktop shortcut creator ────────────────────────────────────────────────
@@ -591,33 +662,51 @@ def create_shortcut(install_dir: Path, script_dir: Path):
 
 
 # ─── Write runtime config ─────────────────────────────────────────────────────
-def write_runtime_config(cfg: dict, install_dir: Path):
+def write_runtime_config(cfg: dict, install_dir: Path, online: bool = True):
     config_path = install_dir / "spoaken_config.json"
     install_dir.mkdir(parents=True, exist_ok=True)
     with open(config_path, "w") as f:
         json.dump({
+            # ── Network / offline mode ─────────────────────────────────────────
+            # offline_mode = True  → spoaken_config.is_online() always returns False
+            #                        without probing the network.
+            # happy_online_only    → T5 grammar correction only loads from local
+            #                        cache; never fetches from HuggingFace at runtime.
+            "offline_mode":           not online,
+            "happy_online_only":      True,
             # ── Transcription engines ──────────────────────────────────────────
             "whisper_model":          cfg.get("whisper_model", "base.en"),
             "whisper_enabled":        True,
+            "whisper_compute":        "auto",
             "vosk_model":             cfg.get("vosk_model", None),
             "vosk_enabled":           cfg.get("vosk_enabled", False),
             "enable_giga_model":      False,
             "vosk_model_accurate":    "vosk-model-en-us-0.42-gigaspeech",
             # ── Hardware ──────────────────────────────────────────────────────
-            "gpu":                    cfg.get("gpu", False),
+            "gpu_enabled":            cfg.get("gpu", False),
             "mic_device":             None,
             "noise_suppression":      cfg.get("noise", False),
             # ── Grammar ───────────────────────────────────────────────────────
-            "grammar":                cfg.get("grammar", True),
+            "grammar_enabled":        cfg.get("grammar", True),
+            "t5_model":               "vennify/t5-base-grammar-correction",
             # ── Chat / networking ──────────────────────────────────────────────
             "chat_server_enabled":    cfg.get("chat_server_enabled", False),
             "chat_server_port":       cfg.get("chat_server_port", 55300),
             "chat_server_token":      cfg.get("chat_server_token", "spoaken"),
             "android_stream_enabled": cfg.get("android_stream_enabled", False),
             "android_stream_port":    cfg.get("android_stream_port", 55301),
+            "bind_address":           "",
+            # ── Security / PKI ────────────────────────────────────────────────
+            "use_tls":                True,
+            "mtls_enabled":           True,
+            "beacon_sign":            True,
+            "msg_envelope":           False,
+            "log_tls_events":         True,
+            "token_ttl":              300.0,
+            "token_clock_skew":       60.0,
             # ── Memory management ─────────────────────────────────────────────
-            "memory_cap_words":       cfg.get("memory_cap_words", 300),
-            "memory_cap_minutes":     cfg.get("memory_cap_minutes", 10),
+            "memory_cap_words":       cfg.get("memory_cap_words", 2000),
+            "memory_cap_minutes":     cfg.get("memory_cap_minutes", 60),
             # ── Text quality ──────────────────────────────────────────────────
             "duplicate_filter":       True,
             # ── Paths ─────────────────────────────────────────────────────────
@@ -626,7 +715,8 @@ def write_runtime_config(cfg: dict, install_dir: Path):
             "platform":               OS,
             "install_dir":            str(install_dir),
         }, f, indent=2)
-    ok(f"Runtime config written to {config_path}")
+    mode_label = "OFFLINE" if not online else "ONLINE"
+    ok(f"Runtime config written to {config_path}  [{mode_label} mode]")
 
 # ─── Interactive CLI fallback ─────────────────────────────────────────────────
 def interactive_config() -> dict:
@@ -668,9 +758,16 @@ def interactive_config() -> dict:
     gpu_raw        = input("\nEnable GPU / CUDA acceleration? [y/N]: ").strip().lower()
     grammar_raw    = input("Install grammar correction (HappyTransformer/T5)? [Y/n]: ").strip().lower()
     noise_raw      = input("Install noise suppression (noisereduce)? [y/N]: ").strip().lower()
-    translation_raw = input("Install translation support (deep-translator)? [y/N]: ").strip().lower()
     llm_raw        = input("Install LLM + summarization packages (ollama, sumy, nltk)? [y/N]: ").strip().lower()
     vad_raw        = input("Install webrtcvad for better Voice Activity Detection? [Y/n]: ").strip().lower()
+
+    print(f"\n{CYAN}── Online / Offline Mode ───────────────────────────────────{NC}")
+    print("  Online mode  : installs Tor/relay/translation packages, copies online source files.")
+    print("  Offline mode : skips all cloud-dependent packages and source files.")
+    print("                 Translation (deep-translator) and online relay will not be available.")
+    print("                 Vosk, Whisper, VAD, LAN chat, and local Ollama work fully offline.")
+    online_raw = input("Install in online mode? [Y/n]: ").strip().lower()
+    online = online_raw not in ("n", "no")
 
     print(f"\n{CYAN}── Chat / Networking ──────────────────────────────────────{NC}")
     print("  LAN chat lets other Spoaken users on your network connect to this machine.")
@@ -703,9 +800,10 @@ def interactive_config() -> dict:
         "gpu":                    gpu_raw in ("y", "yes"),
         "grammar":                grammar_raw not in ("n", "no"),
         "noise":                  noise_raw in ("y", "yes"),
-        "translation":            translation_raw in ("y", "yes"),
+        "translation":            online,   # translation is included automatically in online mode
         "llm":                    llm_raw in ("y", "yes"),
         "vad":                    vad_raw not in ("n", "no"),
+        "online":                 online,
         "chat_server_enabled":    chat_raw in ("y", "yes"),
         "chat_server_port":       chat_port,
         "chat_server_token":      chat_token,
@@ -731,16 +829,40 @@ def run_install(cfg: dict):
     whisper_dir     = install_dir / "models" / "whisper"
     vosk_dir        = install_dir / "models" / "vosk"
 
+    # ── Online / offline detection ─────────────────────────────────────────────
+    # Priority: explicit CLI/config flag → auto-detect
+    if "online" in cfg:
+        online = bool(cfg["online"])
+        detect_label = "forced via --offline/--online flag"
+    else:
+        log("Checking internet connectivity...")
+        online = check_internet()
+        detect_label = "auto-detected"
+    translation = translation or online   # deep-translator comes free with online mode
+
     print(BANNER)
     log(f"Platform    : {OS} ({platform.version()})")
     log(f"Python      : {platform.python_version()} @ {python_exe()}")
     log(f"Install dir : {install_dir}")
+
+    # ── Mode banner ───────────────────────────────────────────────────────────
+    if online:
+        print(f"\n{GREEN}  ● ONLINE MODE{NC}  ({detect_label})")
+        print(f"  {DIM}All packages and source files will be installed, including{NC}")
+        print(f"  {DIM}Tor relay, aiohttp, deep-translator, and online chat files.{NC}")
+    else:
+        print(f"\n{YELLOW}  ○ OFFLINE MODE{NC}  ({detect_label})")
+        print(f"  {DIM}Online-only packages and source files will be skipped.{NC}")
+        print(f"  {DIM}Vosk, Whisper, VAD, LAN chat, and local Ollama work fully.{NC}")
+        print(f"  {DIM}To add online features later: python install.py --online-only{NC}")
+    print()
+
     log(f"Whisper     : {whisper_model}")
     log(f"Vosk        : {vosk_model if vosk_enabled else 'disabled'}")
     log(f"GPU/CUDA    : {'yes' if gpu else 'no'}")
     log(f"Grammar     : {'yes' if grammar else 'no'}")
     log(f"Noise NR    : {'yes' if noise else 'no (install later via Update window)'}")
-    log(f"Translation : {'yes' if translation else 'no (install later via Update window)'}")
+    log(f"Translation : {'yes (online mode)' if online else 'NO (offline mode)'}")
     log(f"LLM/Summary : {'yes' if llm else 'no (install later via Update window)'}")
     log(f"WebRTC VAD  : {'yes' if vad else 'no'}")
     log(f"LAN chat    : {'enabled (port ' + str(cfg.get('chat_server_port', 55300)) + ')' if chat_enabled else 'disabled'}")
@@ -774,13 +896,14 @@ def run_install(cfg: dict):
         translation=translation,
         llm=llm,
         vad=vad,
+        online=online,
     )
 
     # Step 4 — Copy source files into install_dir
     step(4, "Copying Project Files")
     script_dir = Path(__file__).parent.resolve()
     try:
-        copy_source_files(script_dir, install_dir)
+        copy_source_files(script_dir, install_dir, online=online)
     except Exception as e:
         warn(f"File copy encountered an issue: {e}")
         warn("You may need to manually copy the 'spoaken/' folder to the install directory.")
@@ -806,7 +929,7 @@ def run_install(cfg: dict):
     # Step 7 — Write config
     step(7, "Writing Configuration")
     try:
-        write_runtime_config(cfg, install_dir)
+        write_runtime_config(cfg, install_dir, online=online)
     except Exception as e:
         warn(f"Unable to write config: {e}")
 
@@ -820,22 +943,24 @@ def run_install(cfg: dict):
     # ── Done ────────────────────────────────────────────────────────────────────
     optional_installed = [
         name for name, flag in [
-            ("noisereduce", noise), ("deep-translator", translation),
+            ("noisereduce", noise), ("deep-translator + Tor (online mode)", online),
             ("ollama + sumy + nltk", llm), ("webrtcvad", vad),
         ] if flag
     ]
     optional_skipped = [
         name for name, flag in [
-            ("noisereduce", noise), ("deep-translator", translation),
+            ("noisereduce", noise),
             ("ollama + sumy + nltk", llm), ("webrtcvad", vad),
         ] if not flag
     ]
 
+    mode_str = f"{GREEN}ONLINE{NC}" if online else f"{YELLOW}OFFLINE{NC}"
     print(f"""
 {GREEN}╔══════════════════════════════════════════════════════╗
 ║   Installation complete!                             ║
 ╚══════════════════════════════════════════════════════╝{NC}
 
+  Mode:            {mode_str}
   Launch Spoaken:  {CYAN}python3 spoaken/spoaken_main.py{NC}
 
   Config file:     {CYAN}{install_dir / "spoaken_config.json"}{NC}
@@ -858,9 +983,12 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python install.py --interactive              # full guided setup
+  python install.py --interactive              # full guided setup (auto-detects online/offline)
+  python install.py --offline                  # force offline install (no internet needed)
+  python install.py --online                   # force online install (include Tor, relay, translate)
+  python install.py --online-only              # add online packages/files to an existing install
   python install.py --config my_config.json   # re-run from saved config
-  python install.py --noise --translation     # add optional packages to existing install
+  python install.py --noise --llm             # add optional packages to existing install
   python install.py --vosk-only               # re-download vosk model only
         """,
     )
@@ -870,11 +998,39 @@ Examples:
                         help="Run interactive CLI configuration")
     parser.add_argument("--vosk-only",    action="store_true",
                         help="Only install/re-download the Vosk model from config")
-    # Optional feature flags — can be used without --interactive
+    # ── Online / offline mode flags ────────────────────────────────────────────
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--offline",
+        action="store_true",
+        help=(
+            "Force offline install: skip online-only packages (Tor, aiohttp, "
+            "deep-translator) and online source files. Vosk, Whisper, VAD, "
+            "LAN chat, and local Ollama all work fully offline."
+        ),
+    )
+    mode_group.add_argument(
+        "--online",
+        action="store_true",
+        help=(
+            "Force online install even if auto-detection fails: "
+            "include Tor, aiohttp, deep-translator, and online source files."
+        ),
+    )
+    mode_group.add_argument(
+        "--online-only",
+        action="store_true",
+        help=(
+            "Add online-only packages and source files to an existing offline "
+            "install WITHOUT re-running the full installation. Also updates "
+            "spoaken_config.json to set offline_mode = false."
+        ),
+    )
+    # Optional feature flags
     parser.add_argument("--noise",        action="store_true",
                         help="Install noisereduce for noise suppression")
     parser.add_argument("--translation",  action="store_true",
-                        help="Install deep-translator for the translate command")
+                        help="Install deep-translator (implies --online)")
     parser.add_argument("--llm",          action="store_true",
                         help="Install ollama, sumy, nltk, scikit-learn for LLM + summarization")
     parser.add_argument("--no-vad",       action="store_true",
@@ -883,7 +1039,56 @@ Examples:
                         help="Enable LAN chat server in the written config")
     args = parser.parse_args()
 
-    # Determine config
+    # ── --online-only: patch an existing offline install ──────────────────────
+    if args.online_only:
+        log("Online-only mode: adding online packages and files to existing install...")
+
+        log(f"Installing {len(ONLINE_ONLY_PACKAGES)} online-only packages...")
+        for pkg in ONLINE_ONLY_PACKAGES:
+            try:
+                pip_run("install", "--upgrade", pkg)
+                ok(pkg)
+            except RuntimeError as e:
+                warn(f"Could not install {pkg}: {e}")
+
+        # Copy online source files if the install dir can be found from config
+        cfg_path = Path(args.config)
+        if cfg_path.exists():
+            with open(cfg_path) as f:
+                _c = json.load(f)
+            install_dir = Path(_c.get("install_dir", os.path.expanduser("~/spoaken")))
+            script_dir  = Path(__file__).parent.resolve()
+            src_spoaken = script_dir / "spoaken"
+            dest_spoaken = install_dir / "spoaken"
+            if src_spoaken.exists() and dest_spoaken.exists():
+                copied = []
+                for fname in ONLINE_ONLY_SOURCE_FILES:
+                    src_f  = src_spoaken / fname
+                    dest_f = dest_spoaken / fname
+                    if src_f.exists():
+                        shutil.copy2(src_f, dest_f)
+                        ok(f"Copied {fname}")
+                        copied.append(fname)
+                    else:
+                        warn(f"{fname} not found in source — skipping")
+            # Patch config: set offline_mode = false
+            try:
+                _c["offline_mode"] = False
+                cfg_path_dest = install_dir / "spoaken_config.json"
+                target = cfg_path_dest if cfg_path_dest.exists() else cfg_path
+                with open(target, "w") as f:
+                    json.dump(_c, f, indent=2)
+                ok(f"Config updated: offline_mode = false  ({target})")
+            except Exception as e:
+                warn(f"Could not update config: {e}")
+        else:
+            warn(f"Config file '{args.config}' not found — skipping source file copy.")
+            warn("  Online packages were installed. Manually copy online source files if needed.")
+
+        ok("Online-only patch complete.")
+        sys.exit(0)
+
+    # ── Determine config ───────────────────────────────────────────────────────
     if args.interactive:
         cfg = interactive_config()
     elif os.path.exists(args.config):
@@ -897,7 +1102,13 @@ Examples:
             sys.exit(0)
         cfg = interactive_config()
 
-    # CLI flags override config file values
+    # ── CLI flags override config file values ──────────────────────────────────
+    if args.offline:
+        cfg["online"] = False
+    elif args.online or args.translation:
+        cfg["online"] = True
+    # (if neither is set, run_install will auto-detect)
+
     if args.noise:
         cfg["noise"] = True
     if args.translation:
@@ -909,7 +1120,7 @@ Examples:
     if args.chat:
         cfg["chat_server_enabled"] = True
 
-    # Vosk-only mode
+    # ── Vosk-only mode ─────────────────────────────────────────────────────────
     if args.vosk_only:
         vm = cfg.get("vosk_model")
         if not vm:
