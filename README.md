@@ -4,6 +4,7 @@ Spoaken is a cross-platform voice-to-text tool powered by [Faster-Whisper](https
 
 
 Tries to supports **Windows 10/11**, **macOS 12+**, **Ubuntu/Debian**, **Fedora/RHEL**, and **Arch Linux**.
+
 Testing on Arch and macOS is difficult as I do not own these devices.
 
 ---
