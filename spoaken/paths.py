@@ -11,7 +11,6 @@ Installer layout written by install.py:
         models/
             whisper/              ← WHISPER_DIR  (faster-whisper cache)
             vosk/                 ← VOSK_DIR     (vosk model folders)
-        happy/                    ← HAPPY_DIR    (T5 grammar model cache)
         Logs/                     ← LOG_DIR
         spoaken/                  ← SPOAKEN_DIR  (this file lives here)
             Art/                  ← ART_DIR
@@ -44,12 +43,11 @@ for config_path in _CONFIG_CANDIDATES:
 # ── Resolve directories (installer config overrides defaults) ─────────────────
 WHISPER_DIR = Path(config_data.get("whisper_dir", ROOT_DIR / "models" / "whisper"))
 VOSK_DIR    = Path(config_data.get("vosk_dir",    ROOT_DIR / "models" / "vosk"))
-HAPPY_DIR   = ROOT_DIR / "happy"
 ART_DIR     = SPOAKEN_DIR / "Art"
 LOG_DIR     = ROOT_DIR / "Logs"
 
 # ── Auto-create all required folders ─────────────────────────────────────────
-for directory in (ART_DIR, WHISPER_DIR, VOSK_DIR, HAPPY_DIR, LOG_DIR):
+for directory in (ART_DIR, WHISPER_DIR, VOSK_DIR, LOG_DIR):
     try:
         directory.mkdir(parents=True, exist_ok=True)
     except PermissionError:
