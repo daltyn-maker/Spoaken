@@ -3,7 +3,8 @@
 Spoaken is a cross-platform voice-to-text tool powered by [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) and optionally [Vosk](https://alphacephei.com/vosk/). It listens to your microphone, transcribes speech, and types the result directly into whatever window you have focused. It works as a voice to text service with text processing, including translation and summary. along with a chat service for local group projects, or (experimentally) online.
 
 
-Supports **Windows 10/11**, **macOS 12+**, **Ubuntu/Debian**, **Fedora/RHEL**, and **Arch Linux**.
+Tries to supports **Windows 10/11**, **macOS 12+**, **Ubuntu/Debian**, **Fedora/RHEL**, and **Arch Linux**.
+Testing on Arch and macOS is difficult as I do not own these devices.
 
 ---
 
