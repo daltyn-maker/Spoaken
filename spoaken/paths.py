@@ -25,9 +25,9 @@ ROOT_DIR    = SPOAKEN_DIR.parent      # project root
 
 # ── Try to load the installer-generated config for model paths ────────────────
 _CONFIG_CANDIDATES = [
-    ROOT_DIR    / "spoaken_config.json",     # beside the spoaken/ package
-    SPOAKEN_DIR / "spoaken_config.json",     # inside the package (legacy)
-    Path.home() / ".spoaken" / "config.json",# user-home fallback
+    ROOT_DIR    / "spoaken_config.json",      # beside the spoaken/ package
+    SPOAKEN_DIR / "spoaken_config.json",      # inside the package (legacy)
+    Path.home() / ".spoaken" / "config.json", # user-home fallback
 ]
 
 config_data: dict = {}
@@ -38,7 +38,9 @@ for config_path in _CONFIG_CANDIDATES:
                 config_data = json.load(_f)
             break
         except Exception as parse_error:
-            print(f"[Paths]: could not parse {_cp}: {_e}", file=sys.stderr)
+            # Fixed: was referencing undefined `_cp` and `_e` instead of
+            # `config_path` and `parse_error`, causing a secondary NameError.
+            print(f"[Paths]: could not parse {config_path}: {parse_error}", file=sys.stderr)
 
 # ── Resolve directories (installer config overrides defaults) ─────────────────
 WHISPER_DIR = Path(config_data.get("whisper_dir", ROOT_DIR / "models" / "whisper"))
@@ -56,9 +58,3 @@ for directory in (ART_DIR, WHISPER_DIR, VOSK_DIR, LOG_DIR):
             "check permissions or run installer as admin/sudo",
             file=sys.stderr,
         )
-        
-        
-        
-        
-        
-        

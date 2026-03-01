@@ -29,12 +29,13 @@ from pathlib import Path
 
 import sounddevice as sd
 
-from paths import VOSK_DIR, HAPPY_DIR, WHISPER_DIR
+from paths import VOSK_DIR, WHISPER_DIR, ROOT_DIR
+HAPPY_DIR = ROOT_DIR / "models" / "happy"
 from spoaken_config import (
-    VOSK_ENABLED, QUICK_VOSK_MODEL, ENABLE_GIGA_MODEL, ACCURATE_VOSK_MODEL,
+    VOSK_ENABLED, VOSK_MODEL,
     WHISPER_ENABLED, WHISPER_MODEL,
     GRAMMAR_ENABLED, GPU_ENABLED, NOISE_SUPPRESSION,
-    WHISPER_COMPUTE,
+    WHISPER_COMPUTE, HAPPY_ONLINE_ONLY,
 )
 
 # ── Optional: noisereduce ─────────────────────────────────────────────────────
@@ -112,9 +113,23 @@ if WHISPER_ENABLED:
             file=sys.stderr,
         )
 
-# ── HappyTransformer (T5 grammar) ─────────────────────────────────────────────
-_happy_ok = False
+# ── HappyTransformer (T5 grammar) — LOCAL CACHE ONLY ─────────────────────────
+# After install, grammar correction runs entirely offline from the cached model.
+# HappyTransformer will NEVER download weights at runtime.  To cache a model,
+# use the Update & Repair window (⬇ Download & Cache) while online.
+#
+# _happy_ok   = package is importable
+# _happy_cached = a pre-downloaded model exists in HAPPY_DIR
+_happy_ok     = False
+_happy_cached = False
 HappyTextToText = TTSettings = None
+
+_T5_HF_NAME   = "prithivida/grammar_error_correcter_v1"
+_T5_CACHE_DIR = HAPPY_DIR
+_T5_HUB_DIR   = HAPPY_DIR / "hub" / "models--prithivida--grammar_error_correcter_v1"
+
+# Grammar is only usable when the package is present AND a local cache exists.
+# When HAPPY_ONLINE_ONLY is True (default) we never fall back to a live HF download.
 if GRAMMAR_ENABLED:
     try:
         from happytransformer import HappyTextToText, TTSettings
@@ -126,12 +141,28 @@ if GRAMMAR_ENABLED:
             file=sys.stderr,
         )
 
-_T5_HF_NAME   = "prithivida/grammar_error_correcter_v1"
-_T5_CACHE_DIR = HAPPY_DIR
-_T5_HUB_DIR   = HAPPY_DIR / "hub" / "models--prithivida--grammar_error_correcter_v1"
-_T5_SOURCE    = str(_T5_HUB_DIR) if _T5_HUB_DIR.is_dir() else _T5_HF_NAME
+# Detect if a locally cached model exists (any T5 hub folder counts).
+if _happy_ok:
+    _hub_root = HAPPY_DIR / "hub"
+    _happy_cached = _T5_HUB_DIR.is_dir() or (
+        _hub_root.is_dir()
+        and any(p.is_dir() for p in _hub_root.iterdir() if p.name.startswith("models--"))
+    )
+    if not _happy_cached:
+        print(
+            "[Connect]: No local T5 model cache found — grammar correction disabled.\n"
+            "  To enable: open Update & Repair → T5 Models → Download & Cache (requires internet).",
+            file=sys.stderr,
+        )
 
-# ── Deep-translator (optional translate command) ──────────────────────────────
+# _T5_SOURCE: always point to the local hub directory; never use the bare HF name.
+# This prevents any implicit HuggingFace download at load time.
+_T5_SOURCE = str(_T5_HUB_DIR) if _T5_HUB_DIR.is_dir() else None
+
+# ── Deep-translator (optional translate command) — ONLINE ONLY ───────────────
+# deep_translator sends text to Google's cloud API — it requires internet.
+# Import is still attempted so the module is usable when online, but translate_text()
+# will return None immediately if the device is offline.
 try:
     from deep_translator import GoogleTranslator as _GoogleTranslator
     _translate_ok = True
@@ -312,24 +343,30 @@ _LANG_MAP = {
 
 def translate_text(text: str, target_lang: str) -> str | None:
     """
-    Translate text to target_lang.
+    Translate text to target_lang via Google Translate.
+
+    Requires internet access — returns None immediately when offline.
     target_lang may be a language name (fuzzy-matched) or an ISO code.
-    Returns None if translation is unavailable.
     """
     if not _translate_ok:
         return None
+    # Online check — avoid sending data to Google when offline
+    try:
+        from spoaken_config import is_online
+        if not is_online():
+            return None
+    except Exception:
+        pass
     try:
         from rapidfuzz import process
         lang_lower = target_lang.lower().strip()
-        # Try exact map first
         code = _LANG_MAP.get(lang_lower)
         if code is None:
-            # Fuzzy match language names
             m = process.extractOne(lang_lower, list(_LANG_MAP.keys()), score_cutoff=60)
             if m:
                 code = _LANG_MAP[m[0]]
         if code is None:
-            code = lang_lower[:5]  # assume it's already a code
+            code = lang_lower[:5]
         return _GoogleTranslator(source="auto", target=code).translate(text)
     except Exception as e:
         print(f"[Translate Warning]: {e}", file=sys.stderr)
@@ -386,27 +423,19 @@ def scan_installed_whisper_models() -> list:
 
 class TranscriptionModel:
 
-    def __init__(self, quick_vosk: str | None = None, accurate_vosk: str | None = None):
+    def __init__(self, vosk_model: str | None = None, status_callback=None):
         """
-        quick_vosk    : Vosk small model folder name (or None if Vosk disabled).
-        accurate_vosk : Vosk giga model folder name (or None).
+        vosk_model      : Vosk model folder name (or None if Vosk disabled).
+        status_callback : Optional callable(progress: float, text: str) —
+                          used to update the splash screen during loading.
         """
 
         # ── Vosk ──────────────────────────────────────────────────────────────
-        self.small_model     = None
-        self.giga_model      = None
-        self.giga_model_path = None
-        self.giga_model_status = False
+        self.small_model = None
 
-        if _vosk_ok and quick_vosk:
+        if _vosk_ok and vosk_model:
             try:
-                self.small_model = VoskModel(_resolve_vosk(quick_vosk))
-            except FileNotFoundError as exc:
-                print(exc, file=sys.stderr)
-
-        if _vosk_ok and accurate_vosk and ENABLE_GIGA_MODEL:
-            try:
-                self.giga_model_path = _resolve_vosk(accurate_vosk)
+                self.small_model = VoskModel(_resolve_vosk(vosk_model))
             except FileNotFoundError as exc:
                 print(exc, file=sys.stderr)
 
@@ -416,6 +445,14 @@ class TranscriptionModel:
             try:
                 device       = "cuda" if GPU_ENABLED else "cpu"
                 compute_type = _resolve_compute_type(WHISPER_COMPUTE, GPU_ENABLED)
+
+                # Tell the splash whether we are downloading or loading from cache
+                if status_callback:
+                    if WHISPER_MODEL in scan_installed_whisper_models():
+                        status_callback(0.90, f"Loading Whisper ({WHISPER_MODEL}) …")
+                    else:
+                        status_callback(0.90, f"Downloading Whisper ({WHISPER_MODEL}) — please wait …")
+
                 self.whisper_model = WhisperModel(
                     WHISPER_MODEL,
                     device=device,
@@ -435,7 +472,6 @@ class TranscriptionModel:
 
         # ── Audio queues — one per consumer so they never race ────────────────
         self.vosk_queue    = Queue()   # → audio_stream_loop (Vosk fast)
-        self.giga_queue    = Queue()   # → accuracy_process_loop
         self.whisper_queue = Queue()   # → whisper_loop
 
         # Legacy alias kept so controller code that references model.audio_queue
@@ -446,19 +482,21 @@ class TranscriptionModel:
         self.data_store  = []          # Vosk confirmed sentences
         self.whisper_store = []        # Whisper final sentences
 
-    # ── Background loader (giga Vosk + T5) ────────────────────────────────────
+    # ── Background loader (T5 grammar model) ──────────────────────────────────
+    # Only loads from the local cache written by Update & Repair.
+    # Will never trigger a HuggingFace download at runtime.
 
     def _background_load(self):
-        if self.giga_model_path:
-            self.giga_model = VoskModel(self.giga_model_path)
-
-        if _happy_ok:
-            try:
-                os.environ["TRANSFORMERS_CACHE"] = str(_T5_CACHE_DIR)
-                self.tool = HappyTextToText("T5", _T5_SOURCE)
-            except Exception as exc:
-                print(f"[Connect Warning]: T5 load failed — {exc}", file=sys.stderr)
-                self.tool = None
+        if not (_happy_ok and _happy_cached and _T5_SOURCE):
+            return   # no local cache — grammar correction unavailable offline
+        try:
+            os.environ["TRANSFORMERS_CACHE"] = str(_T5_CACHE_DIR)
+            # TRANSFORMERS_OFFLINE=1 prevents any implicit network access by transformers
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            self.tool = HappyTextToText("T5", _T5_SOURCE)
+        except Exception as exc:
+            print(f"[Connect Warning]: T5 load failed — {exc}", file=sys.stderr)
+            self.tool = None
 
     # ── Recognizer factories ───────────────────────────────────────────────────
 
@@ -469,11 +507,6 @@ class TranscriptionModel:
         rec.SetWords(True)
         rec.SetPartialWords(True)
         return rec
-
-    def get_accurate_recognizer(self) -> "KaldiRecognizer":
-        if self.giga_model is None:
-            raise RuntimeError("[Connect]: Giga model not loaded yet.")
-        return KaldiRecognizer(self.giga_model, 16000)
 
     # ── Hot-swap model loaders ─────────────────────────────────────────────────
     # IMPORTANT: is_running must be False before calling these.
@@ -554,9 +587,3 @@ class TranscriptionModel:
             corrected = full   # no T5 — return raw unchanged
 
         return full, corrected
-        
-        
-        
-        
-        
-        

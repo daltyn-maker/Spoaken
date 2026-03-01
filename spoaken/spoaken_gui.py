@@ -30,7 +30,26 @@ from paths import ART_DIR
 from spoaken_connect import list_input_devices, default_device_name, \
     scan_installed_vosk_models, scan_installed_whisper_models
 
-# LLM module is optional — imported lazily to avoid blocking startup
+# ── Optional-module availability flags ──────────────────────────────────────
+# These are checked at build time so every widget that depends on an optional
+# file is disabled (not hidden) immediately if that file has been deleted.
+# We use find_spec() — zero imports, zero side-effects.
+import importlib.util as _iutil
+
+_LLM_AVAILABLE    = _iutil.find_spec("spoaken_llm")         is not None
+_P2P_AVAILABLE    = _iutil.find_spec("spoaken_chat_online")  is not None
+_UPDATE_AVAILABLE = _iutil.find_spec("spoaken_update")       is not None
+_WRITER_AVAILABLE = _iutil.find_spec("spoaken_writer")       is not None
+
+# Human-readable reason strings shown in tooltips / console when unavailable
+_LLM_REASON    = "spoaken_llm.py not found — delete removed Ollama support"
+_P2P_REASON    = "spoaken_chat_online.py not found — P2P/Tor chat unavailable"
+_UPDATE_REASON = "spoaken_update.py not found — updater unavailable"
+_WRITER_REASON = "spoaken_writer.py not found — window writing unavailable"
+
+del _iutil   # keep namespace clean
+
+# ── LLM module is optional — imported lazily to avoid blocking startup ───────
 def _scan_llm_models() -> list[str]:
     """Return list of Ollama models (empty list if Ollama not running)."""
     try:
@@ -95,7 +114,7 @@ BTN_WOFF_H = "#243350"
 BTN_CLR    = "#5e1414"
 BTN_CLR_H  = "#852020"
 BTN_LOG    = "#0d3a40"
-BTN_LOG_H  = "#12566080"
+BTN_LOG_H  = "#125660"
 
 STA_IDLE   = "#44537a"
 STA_REC    = "#d42b2b"
@@ -168,34 +187,65 @@ class TranscriptionView(ctk.CTk):
         # Sidebar visibility
         self._sidebar_open = False
 
-        # ── 3-column horizontal layout ────────────────────────────────────────
-        # col 0 = transcript panel  (weight=1, stretches)
-        # col 1 = controls/centre panel (fixed ~380 px)
-        # col 2 = chat sidebar (hidden by default, weight=0)
-        self.grid_columnconfigure(0, weight=1)           # transcript – stretchy
-        self.grid_columnconfigure(1, weight=0, minsize=380)  # controls – fixed
-        self.grid_columnconfigure(2, weight=0, minsize=0)    # chat – hidden
-        self.grid_rowconfigure(0, weight=1)              # single content row
+        # ── 2-column layout: [PanedWindow] | [chat sidebar] ─────────────────────
+        # The PanedWindow holds transcript (left pane) + controls (right pane),
+        # with a draggable sash between them.
+        # col 0 = PanedWindow – stretchy
+        # col 1 = chat sidebar – hidden until toggled
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=0, minsize=0)
+        self.grid_rowconfigure(0, weight=1)
 
-        self._build_transcript_panel()   # left col
-        self._build_centre_panel()       # middle col
-        self._build_sidebar()            # right col (hidden until toggled)
+        # Draggable horizontal split — drag the sash to resize transcript vs controls
+        self._h_pane = tk.PanedWindow(
+            self, orient=tk.HORIZONTAL,
+            bg=BORDER_SUB,       # sash colour matches the UI border palette
+            sashwidth=7,
+            sashrelief="flat",
+            sashpad=1,
+            bd=0,
+            opaqueresize=True,
+        )
+        self._h_pane.grid(row=0, column=0, padx=(8, 4), pady=8, sticky="nsew")
+
+        self._build_transcript_panel()   # adds left pane to _h_pane
+        self._build_centre_panel()       # adds right pane to _h_pane
+        self._build_sidebar()            # col 1 (hidden until toggled)
         self._configure_log_tags()
+
+        # Set initial sash position after window maps (defer to allow geometry to settle)
+        self.after(150, self._restore_sash)
 
         self.after(_WF_FPS, self._wf_loop)
         self.protocol("WM_DELETE_WINDOW", self.controller.on_close_request)
+
+    def _restore_sash(self, attempt: int = 0):
+        """
+        Place the sash so the controls pane is ~400 px wide and the transcript
+        fills the left ~2/3 of the window.  Retries if not yet mapped.
+        """
+        try:
+            self.update_idletasks()
+            total = self._h_pane.winfo_width()
+            if total > 600:
+                self._h_pane.sash_place(0, total - 400, 0)
+                return
+        except Exception:
+            pass
+        if attempt < 5:
+            self.after(120 * (attempt + 1), lambda: self._restore_sash(attempt + 1))
 
     # ─────────────────────────────────────────────────────────────────────────
     # Left panel — Transcript
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_transcript_panel(self):
-        """Left column: transcript label + scrollable transcript text box."""
+        """Left pane of the PanedWindow: label header + scrollable transcript."""
         lp = ctk.CTkFrame(
-            self, fg_color=BG_CARD,
+            self._h_pane, fg_color=BG_CARD,
             border_color=BORDER_SUB, border_width=1, corner_radius=8,
         )
-        lp.grid(row=0, column=0, padx=(10, 4), pady=10, sticky="nsew")
+        self._h_pane.add(lp, minsize=220, stretch="always")
         lp.grid_rowconfigure(1, weight=1)
         lp.grid_columnconfigure(0, weight=1)
 
@@ -233,9 +283,9 @@ class TranscriptionView(ctk.CTk):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_centre_panel(self):
-        """Middle column: title/waveform at top, console (expands), controls at bottom."""
-        mp = ctk.CTkFrame(self, fg_color="transparent")
-        mp.grid(row=0, column=1, padx=(0, 4), pady=10, sticky="nsew")
+        """Right pane of the PanedWindow: header/waveform, console, controls."""
+        mp = ctk.CTkFrame(self._h_pane, fg_color="transparent")
+        self._h_pane.add(mp, minsize=360, width=400, stretch="never")
         mp.grid_rowconfigure(1, weight=0)   # header card – fixed
         mp.grid_rowconfigure(2, weight=1)   # console – stretches
         mp.grid_rowconfigure(3, weight=0)   # controls card – fixed
@@ -282,13 +332,19 @@ class TranscriptionView(ctk.CTk):
         ).grid(row=0, column=1, sticky="w")
 
         # ── Update launcher button (top-right in header title row) ─────────────
+        _upd_fg    = "#00e5cc" if _UPDATE_AVAILABLE else "#1a2a3a"
+        _upd_hover = "#00c8b0" if _UPDATE_AVAILABLE else "#1a2a3a"
+        _upd_txt   = "#000000" if _UPDATE_AVAILABLE else "#2a4060"
+        _upd_label = "⟳  Update" if _UPDATE_AVAILABLE else "⟳  Update (n/a)"
+        _upd_state = "normal"  if _UPDATE_AVAILABLE else "disabled"
         ctk.CTkButton(
             tr,
-            text="⟳  Update",
-            font=FONT_SMALL, height=24, width=78, corner_radius=5,
-            fg_color   = "#00e5cc",
-            hover_color= "#00c8b0",
-            text_color = "#000000",
+            text=_upd_label,
+            font=FONT_SMALL, height=24, width=100, corner_radius=5,
+            fg_color   = _upd_fg,
+            hover_color= _upd_hover,
+            text_color = _upd_txt,
+            state      = _upd_state,
             command    = self._open_update_window,
         ).grid(row=0, column=2, padx=(8, 8), sticky="e")
 
@@ -320,19 +376,38 @@ class TranscriptionView(ctk.CTk):
         cf.grid_rowconfigure(1, weight=1)
         cf.grid_columnconfigure(0, weight=1)
 
+        # Header row: label + clear button
+        hdr = ctk.CTkFrame(cf, fg_color="transparent")
+        hdr.grid(row=0, column=0, padx=10, pady=(8, 4), sticky="ew")
+        hdr.grid_columnconfigure(0, weight=1)
+
         ctk.CTkLabel(
-            cf, text="Console",
+            hdr, text="Console",
             font=FONT_SMALL, text_color=TXT_DIM, anchor="w",
-        ).grid(row=0, column=0, padx=12, pady=(6, 2), sticky="w")
+        ).grid(row=0, column=0, sticky="w")
+
+        ctk.CTkButton(
+            hdr, text="Clear",
+            font=FONT_SMALL, height=18, width=44, corner_radius=4,
+            fg_color="transparent", hover_color=BORDER_SUB,
+            text_color=TXT_DIM, border_width=0,
+            command=self._clear_console,
+        ).grid(row=0, column=1, sticky="e")
 
         self.console = ctk.CTkTextbox(
             cf,
             fg_color=BG_INPUT, border_color=BORDER_SUB, border_width=1,
-            font=FONT_MONO, text_color=TXT_CONSOLE,
+            font=("Courier New", 10), text_color=TXT_CONSOLE,
             scrollbar_button_color=BORDER_ACT, corner_radius=6,
         )
-        self.console.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="nsew")
+        self.console.grid(row=1, column=0, padx=8, pady=(0, 10), sticky="nsew")
         self.console.configure(state="disabled")
+
+    def _clear_console(self):
+        tb = self.console._textbox
+        tb.configure(state="normal")
+        tb.delete("1.0", "end")
+        tb.configure(state="disabled")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Controls
@@ -473,26 +548,33 @@ class TranscriptionView(ctk.CTk):
         t2t_row.grid_columnconfigure(3, weight=1)
 
         self._llm_enabled = True
+        self._llm_models  = _scan_llm_models() if _LLM_AVAILABLE else ["(unavailable)"]
+        _llm_col   = "#c084fc" if _LLM_AVAILABLE else TXT_DIM
+        _llm_state = "normal"  if _LLM_AVAILABLE else "disabled"
+        _llm_tip   = "" if _LLM_AVAILABLE else f"  ({_LLM_REASON})"
         self.lbl_llm = ctk.CTkLabel(
             t2t_row, text="LLM",
-            font=FONT_SMALL, text_color="#c084fc", anchor="w", width=36,
-            cursor="hand2",
+            font=FONT_SMALL, text_color=_llm_col, anchor="w", width=36,
+            cursor="hand2" if _LLM_AVAILABLE else "arrow",
         )
         self.lbl_llm.grid(row=0, column=0, sticky="w", padx=(0, 4))
-        self.lbl_llm.bind("<Button-1>", lambda e: self._toggle_llm())
+        if _LLM_AVAILABLE:
+            self.lbl_llm.bind("<Button-1>", lambda e: self._toggle_llm())
 
-        self._llm_models = _scan_llm_models()
+        _llm_display_models = self._llm_models if _LLM_AVAILABLE else ["(unavailable)"]
         self.cmb_llm = ctk.CTkComboBox(
             t2t_row,
-            values=self._llm_models,
-            font=("Courier New", 9), text_color="#c084fc",
+            values=_llm_display_models,
+            font=("Courier New", 9), text_color=_llm_col,
             fg_color=BG_INPUT, border_color=BORDER_SUB, border_width=1,
-            button_color="#3a1a60", button_hover_color="#5a2a90",
-            dropdown_fg_color=BG_CARD, dropdown_text_color="#c084fc",
+            button_color="#3a1a60" if _LLM_AVAILABLE else BORDER_SUB,
+            button_hover_color="#5a2a90" if _LLM_AVAILABLE else BORDER_SUB,
+            dropdown_fg_color=BG_CARD, dropdown_text_color=_llm_col,
             height=28, corner_radius=5,
+            state=_llm_state,
             command=self._on_llm_model_change,
         )
-        self.cmb_llm.set(self._llm_models[0])
+        self.cmb_llm.set(_llm_display_models[0])
         self.cmb_llm.grid(row=0, column=1, sticky="ew", padx=(0, 8))
 
         # T5 model selector (grammar / paraphrase / summarise)
@@ -535,7 +617,10 @@ class TranscriptionView(ctk.CTk):
         self.btn_llm_translate = ctk.CTkButton(
             llm_btn_row, text="Translate",
             font=FONT_SMALL, height=28, corner_radius=5,
-            fg_color="#2a1a40", hover_color="#3d2660", text_color="#c084fc",
+            fg_color="#2a1a40" if _LLM_AVAILABLE else "#181820",
+            hover_color="#3d2660" if _LLM_AVAILABLE else "#181820",
+            text_color="#c084fc" if _LLM_AVAILABLE else TXT_DIM,
+            state="normal" if _LLM_AVAILABLE else "disabled",
             command=lambda: self._llm_set_mode("translate"),
         )
         self.btn_llm_translate.grid(row=0, column=0, padx=(0, 2), sticky="ew")
@@ -543,7 +628,10 @@ class TranscriptionView(ctk.CTk):
         self.btn_llm_summarize = ctk.CTkButton(
             llm_btn_row, text="Summarize",
             font=FONT_SMALL, height=28, corner_radius=5,
-            fg_color="#1a1a40", hover_color="#282870", text_color="#9090d0",
+            fg_color="#1a1a40" if _LLM_AVAILABLE else "#181820",
+            hover_color="#282870" if _LLM_AVAILABLE else "#181820",
+            text_color="#9090d0" if _LLM_AVAILABLE else TXT_DIM,
+            state="normal" if _LLM_AVAILABLE else "disabled",
             command=lambda: self._llm_set_mode("summarize"),
         )
         self.btn_llm_summarize.grid(row=0, column=1, padx=(0, 2), sticky="ew")
@@ -563,10 +651,17 @@ class TranscriptionView(ctk.CTk):
                      ).grid(row=8, column=0, sticky="ew", pady=(4, 0))
 
         # ── Row 9-10: Target window + Lock ────────────────────────────────────
+        _wrt_lbl = (
+            "Write to application  (e.g. Notepad, Chrome, LibreOffice)"
+            if _WRITER_AVAILABLE else
+            "Write to application  [unavailable — spoaken_writer.py deleted]"
+        )
         ctk.CTkLabel(
             cf,
-            text="Write to application  (e.g. Notepad, Chrome, LibreOffice)",
-            font=FONT_SMALL, text_color=TXT_DIM, anchor="w",
+            text=_wrt_lbl,
+            font=FONT_SMALL,
+            text_color=TXT_DIM if _WRITER_AVAILABLE else "#2a3a50",
+            anchor="w",
         ).grid(row=9, column=0, padx=14, pady=(8, 2), sticky="w")
 
         target_row = ctk.CTkFrame(cf, fg_color="transparent")
@@ -575,18 +670,27 @@ class TranscriptionView(ctk.CTk):
 
         self.ent_target = ctk.CTkEntry(
             target_row,
-            placeholder_text="Enter window title …",
+            placeholder_text="Enter window title …" if _WRITER_AVAILABLE
+                             else "unavailable",
             fg_color=BG_INPUT, border_color=BORDER_SUB, border_width=1,
-            text_color=TXT_MAIN, placeholder_text_color=TXT_DIM,
+            text_color=TXT_MAIN if _WRITER_AVAILABLE else TXT_DIM,
+            placeholder_text_color=TXT_DIM,
             height=34, corner_radius=6, font=FONT_UI,
+            state="normal" if _WRITER_AVAILABLE else "disabled",
         )
         self.ent_target.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        self.ent_target.bind("<Return>", lambda e: self.controller.lock_writer_target())
+        if _WRITER_AVAILABLE:
+            self.ent_target.bind("<Return>",
+                                 lambda e: self.controller.lock_writer_target())
 
         self.btn_lock = ctk.CTkButton(
             target_row, text="Lock In",
             font=FONT_SMALL, height=34, corner_radius=6,
-            fg_color="#1a3a5e", hover_color="#2450a0", width=90,
+            fg_color="#1a3a5e" if _WRITER_AVAILABLE else "#0d1f30",
+            hover_color="#2450a0" if _WRITER_AVAILABLE else "#0d1f30",
+            text_color=TXT_MAIN if _WRITER_AVAILABLE else TXT_DIM,
+            width=90,
+            state="normal" if _WRITER_AVAILABLE else "disabled",
             command=self.controller.lock_writer_target,
         )
         self.btn_lock.grid(row=0, column=1)
@@ -612,7 +716,10 @@ class TranscriptionView(ctk.CTk):
         self.btn_writing = ctk.CTkButton(
             top_btn_row, text="Write: OFF",
             font=FONT_SMALL, height=30, corner_radius=6,
-            fg_color=BTN_WOFF, hover_color=BTN_WOFF_H,
+            fg_color=BTN_WOFF if _WRITER_AVAILABLE else "#0d1520",
+            hover_color=BTN_WOFF_H if _WRITER_AVAILABLE else "#0d1520",
+            text_color=TXT_MAIN if _WRITER_AVAILABLE else TXT_DIM,
+            state="normal" if _WRITER_AVAILABLE else "disabled",
             command=self.controller.toggle_page_writing,
         )
         self.btn_writing.grid(row=0, column=0, padx=(0, 3), sticky="ew")
@@ -662,13 +769,36 @@ class TranscriptionView(ctk.CTk):
             self.update_console(f"[Mic Config]: could not open — {exc}")
 
     def _configure_log_tags(self):
+        # ── Transcript tags ───────────────────────────────────────────────────
         t = self.log._textbox
-        t.tag_configure("vosk",    foreground=TXT_VOSK)
-        t.tag_configure("whisper", foreground=TXT_WHISPER)
-        t.tag_configure("partial", foreground=TXT_PARTIAL)
-        # Legacy tags kept for compat
-        t.tag_configure("pending",   foreground=TXT_PARTIAL)
-        t.tag_configure("confirmed", foreground=TXT_VOSK)
+        t.tag_configure("vosk",      foreground=TXT_VOSK)
+        t.tag_configure("whisper",   foreground=TXT_WHISPER)
+        t.tag_configure("partial",   foreground=TXT_PARTIAL)
+        t.tag_configure("pending",   foreground=TXT_PARTIAL)   # legacy
+        t.tag_configure("confirmed", foreground=TXT_VOSK)      # legacy
+
+        # ── Console tags — severity-coded ─────────────────────────────────────
+        c = self.console._textbox
+        c.tag_configure("con_ts",      foreground="#1a3460", font=("Courier New", 9))
+        c.tag_configure("con_info",    foreground=TXT_CONSOLE)
+        c.tag_configure("con_success", foreground="#00e5a0",  font=("Courier New", 11, "bold"))
+        c.tag_configure("con_warning", foreground="#f0c040")
+        c.tag_configure("con_error",   foreground="#ff5555",  font=("Courier New", 11, "bold"))
+        c.tag_configure("con_dim",     foreground="#1a3060")
+        c.tag_configure("con_sep",     foreground="#0d2040")
+
+        # ── Chat log tags ─────────────────────────────────────────────────────
+        cl = self._chat_log._textbox
+        cl.tag_configure("chat_peer",   foreground="#e8f4ff",
+                         font=("Segoe UI", 10, "bold"))
+        cl.tag_configure("chat_me",     foreground=TXT_TEAL,
+                         font=("Segoe UI", 10))
+        cl.tag_configure("chat_system", foreground=TXT_DIM,
+                         font=("Segoe UI", 8))
+        cl.tag_configure("chat_header", foreground=TXT_VOSK,
+                         font=("Segoe UI", 9, "bold"))
+        cl.tag_configure("chat_error",  foreground="#ff6060",
+                         font=("Segoe UI", 9))
 
     # ─────────────────────────────────────────────────────────────────────────
     # Chat sidebar  (full SpoakenLANClient integration)
@@ -693,15 +823,25 @@ class TranscriptionView(ctk.CTk):
         self._sidebar_frame.grid_rowconfigure(4, weight=1)
         self._sidebar_frame.grid_columnconfigure(0, weight=1)
 
-        # ══ Row 0: Header — title  |  Local ⟷ Online toggle  |  Port/Status ═══
+        # ══ Row 0: Header — title + status badge ════════════════════════════════
         sb_hdr = ctk.CTkFrame(self._sidebar_frame, fg_color=BG_PANEL, corner_radius=0)
         sb_hdr.grid(row=0, column=0, sticky="ew")
         sb_hdr.grid_columnconfigure(1, weight=1)
 
+        # Title + live connection status badge on the same row
+        title_cell = ctk.CTkFrame(sb_hdr, fg_color="transparent")
+        title_cell.grid(row=0, column=0, padx=(10, 4), pady=(8, 2), sticky="w")
+
         ctk.CTkLabel(
-            sb_hdr, text="	Chat",
+            title_cell, text="💬  Chat",
             font=FONT_TITLE, text_color=TXT_VOSK, anchor="w",
-        ).grid(row=0, column=0, padx=(12, 6), pady=6, sticky="w")
+        ).pack(side="left")
+
+        self._conn_status_lbl = ctk.CTkLabel(
+            title_cell, text="  ● offline",
+            font=("Segoe UI", 8), text_color=STA_IDLE,
+        )
+        self._conn_status_lbl.pack(side="left", padx=(6, 0))
 
         # ── Local ⟷ Online segmented toggle ──────────────────────────────────
         self._mode_var = tk.StringVar(value="Local")
@@ -711,7 +851,7 @@ class TranscriptionView(ctk.CTk):
         toggle_frame.grid_columnconfigure(1, weight=1)
 
         self._btn_local = ctk.CTkButton(
-            toggle_frame, text="⬡  Local",
+            toggle_frame, text="🖧  LAN",
             font=FONT_SMALL, height=26, corner_radius=4,
             fg_color=BORDER_TEA, hover_color="#0d6080",
             text_color=TXT_VOSK,
@@ -720,24 +860,37 @@ class TranscriptionView(ctk.CTk):
         self._btn_local.grid(row=0, column=0, padx=(0, 1), sticky="ew")
 
         self._btn_online = ctk.CTkButton(
-            toggle_frame, text="⬡  Online",
+            toggle_frame, text="🌐  P2P" if _P2P_AVAILABLE else "🌐  P2P (n/a)",
             font=FONT_SMALL, height=26, corner_radius=4,
-            fg_color="#12182e", hover_color="#1a2a50",
+            fg_color="#12182e", hover_color="#1a2a50" if _P2P_AVAILABLE else "#12182e",
             text_color=TXT_DIM,
+            state="normal" if _P2P_AVAILABLE else "disabled",
             command=self._switch_to_online,
         )
         self._btn_online.grid(row=0, column=1, padx=(1, 0), sticky="ew")
 
-        # Port button — toggles LAN server port on/off
+        # LAN Access toggle — amber when OFF, red when ON
+        # OFF = amber/yellow  →  "LAN Access: Off"   (inviting the user to enable)
+        # ON  = red           →  "LAN Access: On"    (active / prominent warning)
         self._port_on = False
         self.btn_port = ctk.CTkButton(
-            sb_hdr, text="Toggle LAN Availabilty",
-            font=FONT_SMALL, height=26, width=82, corner_radius=5,
-            fg_color="#1a2640", hover_color="#253560",
-            text_color=TXT_DIM,
+            sb_hdr, text="LAN Access: Off",
+            font=FONT_SMALL, height=26, width=110, corner_radius=5,
+            fg_color="#3d2e00", hover_color="#5a4400",
+            text_color="#f0c040",
+            border_color="#f0c040", border_width=1,
             command=self._on_toggle_port,
         )
-        self.btn_port.grid(row=0, column=2, padx=(0, 4), pady=6)
+        self.btn_port.grid(row=0, column=2, padx=(0, 6), pady=6)
+
+        # Mode hint — updates when toggling LAN vs P2P
+        self._mode_hint_lbl = ctk.CTkLabel(
+            sb_hdr,
+            text="  Connect to a Spoaken server on your local network",
+            font=("Segoe UI", 7), text_color=TXT_DIM, anchor="w",
+        )
+        self._mode_hint_lbl.grid(row=1, column=0, columnspan=3, padx=10,
+                                 pady=(0, 6), sticky="w")
 
         ctk.CTkFrame(self._sidebar_frame, height=1, fg_color=BORDER_TEA,
                      corner_radius=0).grid(row=1, column=0, sticky="ew")
@@ -885,6 +1038,14 @@ class TranscriptionView(ctk.CTk):
             command=self._on_chat_send,
         ).grid(row=0, column=1)
 
+        ctk.CTkButton(
+            msg_row, text="📎",
+            font=("Segoe UI", 13), height=30, width=34, corner_radius=4,
+            fg_color="#0d2a3a", hover_color="#0d4050",
+            text_color=TXT_TEAL,
+            command=self._open_file_transfer_dialog,
+        ).grid(row=0, column=2, padx=(4, 0))
+
     # ─────────────────────────────────────────────────────────────────────────
     # Local panel  (LAN / Spoaken server)
     # ─────────────────────────────────────────────────────────────────────────
@@ -989,6 +1150,49 @@ class TranscriptionView(ctk.CTk):
             border_color="#1a2d60", border_width=1, corner_radius=6,
         )
         self._online_panel.grid_columnconfigure(1, weight=1)
+
+        # When spoaken_chat_online.py has been deleted, show a single banner
+        # instead of wiring up controls that would immediately crash.
+        if not _P2P_AVAILABLE:
+            ctk.CTkLabel(
+                self._online_panel,
+                text=(
+                    "⚠  P2P / Tor chat is unavailable\n\n"
+                    "spoaken_chat_online.py has been deleted.\n"
+                    "Restore the file to re-enable this feature."
+                ),
+                font=FONT_SMALL, text_color="#2a4a60",
+                justify="left", anchor="w", wraplength=240,
+            ).grid(row=0, column=0, columnspan=3,
+                   padx=16, pady=20, sticky="w")
+
+            # Create stubs so any code that references these attributes
+            # (e.g. _on_room_bar_join) doesn't raise AttributeError.
+            class _Stub:
+                def get(self):    return ""
+                def delete(self, *a): pass
+                def insert(self, *a): pass
+                def focus(self):  pass
+                def configure(self, **kw): pass
+
+            self._p2p_user_entry  = _Stub()
+            self._p2p_join_entry  = _Stub()
+            self._p2p_pw_entry    = _Stub()
+            self._p2p_did_lbl     = _Stub()
+            self._p2p_status_lbl  = _Stub()
+            self._btn_copy_onion  = _Stub()
+
+            # Stub buttons that other methods may call .configure() on
+            class _BtnStub:
+                def configure(self, **kw): pass
+                def grid(self, **kw): pass
+                def grid_remove(self): pass
+
+            self.btn_p2p_claim = _BtnStub()
+            self.btn_p2p_start = _BtnStub()
+            self.btn_p2p_stop  = _BtnStub()
+            self.btn_p2p_join  = _BtnStub()
+            return
 
         # ── Identity row ──────────────────────────────────────────────────────
         ctk.CTkLabel(
@@ -1149,9 +1353,23 @@ class TranscriptionView(ctk.CTk):
         self.btn_browse_rooms.grid_remove()
         self.btn_join_room_bar.grid_remove()
         self.btn_create_room.grid()
-        self.chat_receive("[ ⬡ Switched to Local mode ]")
+        try:
+            self._mode_hint_lbl.configure(
+                text="  Connect to a Spoaken server on your local network"
+            )
+        except Exception:
+            pass
+        self.chat_receive("[ 🖧  Switched to LAN mode ]")
 
     def _switch_to_online(self):
+        if not _P2P_AVAILABLE:
+            self.chat_receive(
+                "[ ✗  P2P unavailable — spoaken_chat_online.py has been deleted ]"
+            )
+            self.update_console(
+                f"[Console]: {_P2P_REASON}"
+            )
+            return
         if self._p2p_mode:
             return
         self._p2p_mode = True
@@ -1162,9 +1380,21 @@ class TranscriptionView(ctk.CTk):
         self.btn_port.grid_remove()
         self.btn_browse_rooms.grid()
         self.btn_join_room_bar.grid()
-        self.chat_receive("[ ⬡ Switched to P2P Online mode ]")
-        self.chat_receive("[P2P]: Set a username and click Claim, then Start to launch your Tor node.")
-        self.chat_receive("[P2P]: Share your .onion address with peers so they can join your rooms.")
+        try:
+            self._mode_hint_lbl.configure(
+                text="  Encrypted P2P chat via Tor — no central server needed"
+            )
+        except Exception:
+            pass
+        self.chat_receive("[ 🌐  Switched to P2P Online mode ]")
+        self.chat_receive("")
+        self.chat_receive("  How to get started:")
+        self.chat_receive("  1.  Enter a username and click Claim")
+        self.chat_receive("  2.  Click ⬡ Start to launch your Tor node")
+        self.chat_receive("  3.  Click + Create to make a room, or paste a")
+        self.chat_receive("       .onion/room-id address and click → Join")
+        self.chat_receive("  4.  Share your .onion address with peers")
+        self.chat_receive("")
 
     # ─────────────────────────────────────────────────────────────────────────
     # P2P Identity helpers
@@ -1281,17 +1511,22 @@ class TranscriptionView(ctk.CTk):
                             self._btn_copy_onion.grid()
                         except Exception:
                             pass
-                        self.chat_receive(f"[P2P]: ✔ Node started — {node.onion_address}")
-                        self.chat_receive(f"[P2P]: Your DID: {node.did}")
-                        self.chat_receive(f"[P2P]: Share your .onion address so peers can join your rooms.")
+                        try:
+                            self._conn_status_lbl.configure(
+                                text="  ● node running", text_color=TXT_VOSK)
+                        except Exception:
+                            pass
+                        self.chat_receive(f"✔  Tor node started — {node.onion_address}")
+                        self.chat_receive(f"    Your DID: {node.did}")
+                        self.chat_receive(f"    Share your .onion address so peers can join.")
                     else:
                         self.btn_p2p_start.configure(state="normal")
                         self._p2p_status_lbl.configure(
                             text="  ✗ Failed — is Tor running? (or: pip install torpy)",
                             text_color="#e03535")
-                        self.chat_receive("[P2P]: ✗ Failed to start.")
-                        self.chat_receive("[P2P]: Options: (A) sudo apt install tor && systemctl start tor")
-                        self.chat_receive("[P2P]:          (B) pip install torpy  (no daemon needed)")
+                        self.chat_receive("✗  Failed to start Tor node.")
+                        self.chat_receive("   Option A:  sudo apt install tor && systemctl start tor")
+                        self.chat_receive("   Option B:  pip install torpy  (no daemon needed)")
                 self.after(0, _update)
             except Exception as exc:
                 self.after(0, lambda e=exc: (
@@ -1461,10 +1696,302 @@ class TranscriptionView(ctk.CTk):
             self.after(0, lambda d=display: self.cmb_room.configure(values=d))
 
         elif t == "m.file.received":
-            fname = c.get("filename", "file")
-            path  = c.get("_saved_path", "")
-            self.after(0, lambda f=fname, p=path:
-                       self.chat_receive(f"[P2P]: link Received '{f}' → {p}"))
+            fname  = c.get("filename", "file")
+            size   = c.get("size", 0)
+            path   = c.get("_saved_path", "")
+            kb     = size // 1024 if size else 0
+            msg    = f"  📥  Received '{fname}'  ({kb} KB)" + (f"\n       → {path}" if path else "")
+            self.after(0, lambda m=msg: self.chat_receive(m))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # File Transfer — send / browse files in the current room
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _open_file_transfer_dialog(self):
+        """
+        File Transfer panel — opened by the 📎 button in the message row.
+
+        LAN mode
+        ────────
+          • Send File  — file-picker → SpoakenLANClient.send_file(room_id, path)
+          • Room Files — list_files(room_id) → m.file.list → _on_file_list_received()
+
+        P2P / Tor mode
+        ──────────────
+          • Send File  — file-picker → SpoakenP2PNode.send_file(room_id, path)
+          • Room Files — not server-stored in P2P; dialog explains this clearly.
+
+        Non-modal (no grab_set) so the chat window remains usable.
+        """
+        import pathlib as _pl
+        from tkinter import filedialog as _fd
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("File Transfer")
+        dlg.geometry("430x400")
+        dlg.configure(fg_color="#060c1a")
+        dlg.resizable(True, True)
+        dlg.grid_columnconfigure(0, weight=1)
+        dlg.grid_rowconfigure(2, weight=1)
+
+        # ── Header ────────────────────────────────────────────────────────────
+        hdr = ctk.CTkFrame(dlg, fg_color="#0a1128", corner_radius=0)
+        hdr.grid(row=0, column=0, sticky="ew")
+        hdr.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            hdr, text="📎  File Transfer",
+            font=("Segoe UI Semibold", 13), text_color=TXT_TEAL, anchor="w",
+        ).grid(row=0, column=0, padx=12, pady=(10, 2), sticky="w")
+
+        room_name = self._room_var.get() if hasattr(self, "_room_var") else "(no room)"
+        ctk.CTkLabel(
+            hdr, text=f"Room: {room_name}",
+            font=FONT_SMALL, text_color=TXT_DIM, anchor="w",
+        ).grid(row=1, column=0, padx=14, pady=(0, 8), sticky="w")
+        ctk.CTkFrame(hdr, height=1, fg_color=BORDER_TEA, corner_radius=0,
+                     ).grid(row=2, column=0, sticky="ew")
+
+        # ── Send section ──────────────────────────────────────────────────────
+        send_frm = ctk.CTkFrame(dlg, fg_color="#0d1735",
+                                border_color=BORDER_TEA, border_width=1, corner_radius=8)
+        send_frm.grid(row=1, column=0, padx=10, pady=(10, 4), sticky="ew")
+        send_frm.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            send_frm, text="Send a file to this room",
+            font=FONT_SMALL, text_color=TXT_DIM, anchor="w",
+        ).grid(row=0, column=0, padx=12, pady=(8, 4), sticky="w")
+
+        path_var  = tk.StringVar()
+        path_row  = ctk.CTkFrame(send_frm, fg_color="transparent")
+        path_row.grid(row=1, column=0, padx=10, pady=(0, 4), sticky="ew")
+        path_row.grid_columnconfigure(0, weight=1)
+
+        path_entry = ctk.CTkEntry(
+            path_row, textvariable=path_var,
+            placeholder_text="Select or paste a file path …",
+            fg_color="#0c1636", border_color=BORDER_TEA, border_width=1,
+            text_color=TXT_TEAL, placeholder_text_color=TXT_DIM,
+            height=30, corner_radius=4, font=("Courier New", 9),
+        )
+        path_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        def _pick():
+            p = _fd.askopenfilename(
+                parent=dlg, title="Choose file to send",
+                filetypes=[("All files", "*.*"),
+                           ("Text / Transcript", "*.txt *.md *.log"),
+                           ("Audio", "*.wav"), ("JSON", "*.json")],
+            )
+            if p:
+                path_var.set(p)
+
+        ctk.CTkButton(
+            path_row, text="Browse …",
+            font=FONT_SMALL, height=30, width=76, corner_radius=4,
+            fg_color="#0d2a3a", hover_color="#0d4050", text_color=TXT_TEAL,
+            command=_pick,
+        ).grid(row=0, column=1)
+
+        send_status = ctk.CTkLabel(
+            send_frm, text="",
+            font=("Courier New", 9), text_color=TXT_DIM, anchor="w",
+        )
+        send_status.grid(row=2, column=0, padx=12, pady=(0, 2), sticky="w")
+
+        def _do_send():
+            fp = path_var.get().strip()
+            if not fp:
+                send_status.configure(text="⚠  No file selected.", text_color="#f0c040")
+                return
+            p = _pl.Path(fp)
+            if not p.exists():
+                send_status.configure(text=f"⚠  Not found: {p.name}", text_color="#ff6060")
+                return
+            if p.stat().st_size > 50 * 1024 * 1024:
+                send_status.configure(text="⚠  Too large (max 50 MB).", text_color="#ff6060")
+                return
+            kb = p.stat().st_size // 1024
+            send_status.configure(text=f"  Sending '{p.name}' ({kb} KB) …", text_color=TXT_DIM)
+            btn_send.configure(state="disabled")
+
+            def _bg():
+                try:
+                    if self._p2p_mode:
+                        if self._p2p_node and self._p2p_current_room:
+                            self._p2p_node.send_file(self._p2p_current_room, fp)
+                        else:
+                            self.after(0, lambda: send_status.configure(
+                                text="⚠  Start node and join a room first.", text_color="#ff6060"))
+                            self.after(0, lambda: btn_send.configure(state="normal"))
+                            return
+                    else:
+                        if self._lan_client and self._lan_client.is_connected() \
+                                and self._lan_current_room:
+                            self._lan_client.send_file(self._lan_current_room, fp)
+                        else:
+                            self.after(0, lambda: send_status.configure(
+                                text="⚠  Connect to a room first.", text_color="#ff6060"))
+                            self.after(0, lambda: btn_send.configure(state="normal"))
+                            return
+                    self.after(0, lambda n=p.name, k=kb: (
+                        send_status.configure(
+                            text=f"  ✔  '{n}' queued.", text_color="#00e5a0"),
+                        btn_send.configure(state="normal"),
+                        self.chat_receive(f"  📤  Sending '{n}'  ({k} KB) …"),
+                    ))
+                except Exception as exc:
+                    self.after(0, lambda e=exc: (
+                        send_status.configure(text=f"✗  {e}", text_color="#ff6060"),
+                        btn_send.configure(state="normal"),
+                    ))
+
+            threading.Thread(target=_bg, daemon=True).start()
+
+        btn_send = ctk.CTkButton(
+            send_frm, text="📤  Send File",
+            height=30, corner_radius=5,
+            fg_color=BORDER_TEA, hover_color="#145060", text_color="#000000",
+            font=("Segoe UI Semibold", 10),
+            command=_do_send,
+        )
+        btn_send.grid(row=3, column=0, padx=10, pady=(0, 10), sticky="ew")
+
+        # ── Room files section ─────────────────────────────────────────────────
+        files_hdr = ctk.CTkFrame(dlg, fg_color="transparent")
+        files_hdr.grid(row=2, column=0, padx=10, pady=(0, 0), sticky="nsew")
+        files_hdr.grid_columnconfigure(0, weight=1)
+        files_hdr.grid_rowconfigure(1, weight=1)
+
+        lbl_row = ctk.CTkFrame(files_hdr, fg_color="transparent")
+        lbl_row.grid(row=0, column=0, sticky="ew")
+        lbl_row.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            lbl_row, text="Files in this room",
+            font=FONT_SMALL, text_color=TXT_DIM, anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+
+        def _refresh_files():
+            if self._p2p_mode:
+                self.chat_receive(
+                    "  [Files]: P2P files stream inline — no server-side file list.")
+                return
+            if not self._lan_client or not self._lan_client.is_connected():
+                self.chat_receive("  [Files]: Connect to a server first.")
+                return
+            if not self._lan_current_room:
+                self.chat_receive("  [Files]: Join a room first.")
+                return
+            self._lan_client.list_files(self._lan_current_room)
+            self.chat_receive("  [Files]: Fetching room file list …")
+
+        ctk.CTkButton(
+            lbl_row, text="↺  Refresh",
+            font=FONT_SMALL, height=24, width=76, corner_radius=4,
+            fg_color="#0d2040", hover_color="#1a3a60", text_color=TXT_DIM,
+            command=_refresh_files,
+        ).grid(row=0, column=1)
+
+        self._file_list_frame = ctk.CTkScrollableFrame(
+            files_hdr, fg_color="#0d1735",
+            border_color=BORDER_TEA, border_width=1, corner_radius=6,
+            scrollbar_button_color=BORDER_ACT,
+        )
+        self._file_list_frame.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
+        self._file_list_frame.grid_columnconfigure(0, weight=1)
+        self._file_list_dlg = dlg
+
+        ctk.CTkLabel(
+            self._file_list_frame,
+            text="  Click ↺ Refresh to load room files",
+            font=FONT_SMALL, text_color=TXT_DIM, anchor="w",
+        ).grid(row=0, column=0, padx=8, pady=12, sticky="w")
+
+        ctk.CTkButton(
+            dlg, text="✕  Close",
+            font=FONT_SMALL, height=26, corner_radius=4,
+            fg_color="#2a1010", hover_color="#4a2020", text_color="#e07070",
+            command=dlg.destroy,
+        ).grid(row=3, column=0, padx=10, pady=(4, 8), sticky="e")
+
+        # Auto-refresh if already in a LAN room
+        if not self._p2p_mode and self._lan_client and \
+                self._lan_client.is_connected() and self._lan_current_room:
+            dlg.after(200, _refresh_files)
+
+    def _on_file_list_received(self, files: list, mode: str = "lan"):
+        """
+        Populate the file-list frame inside the open File Transfer dialog.
+        Called on the main thread via after() from the m.file.list event handler.
+        """
+        if not (hasattr(self, "_file_list_dlg") and
+                self._file_list_dlg is not None and
+                self._file_list_dlg.winfo_exists()):
+            return
+        if not hasattr(self, "_file_list_frame"):
+            return
+
+        sf = self._file_list_frame
+        for w in sf.winfo_children():
+            try:
+                w.destroy()
+            except Exception:
+                pass
+
+        if not files:
+            ctk.CTkLabel(
+                sf, text="  No files in this room yet.",
+                font=FONT_SMALL, text_color=TXT_DIM, anchor="w",
+            ).grid(row=0, column=0, padx=8, pady=12, sticky="w")
+            return
+
+        from tkinter import filedialog as _fd
+
+        for i, f in enumerate(files):
+            fname   = f.get("filename", "file")
+            size    = f.get("size", 0)
+            sender  = f.get("sender", "?")
+            file_id = f.get("file_id", "")
+            kb      = size // 1024 if size else 0
+            alt_bg  = "#080f20" if i % 2 else "#0d1735"
+
+            row_f = ctk.CTkFrame(sf, fg_color=alt_bg, corner_radius=4)
+            row_f.grid(row=i, column=0, padx=4, pady=2, sticky="ew")
+            row_f.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                row_f,
+                text=f"  📄  {fname}",
+                font=("Segoe UI Semibold", 10),
+                text_color=TXT_TEAL, anchor="w",
+            ).grid(row=0, column=0, padx=4, pady=(5, 0), sticky="w")
+
+            ctk.CTkLabel(
+                row_f,
+                text=f"   {kb} KB  ·  from {sender}  ·  id:{file_id[:12]}",
+                font=("Courier New", 7), text_color=TXT_DIM, anchor="w",
+            ).grid(row=1, column=0, padx=4, pady=(0, 4), sticky="w")
+
+            def _dl(fid=file_id, fn=fname):
+                parent = (self._file_list_dlg
+                          if hasattr(self, "_file_list_dlg") and
+                          self._file_list_dlg.winfo_exists() else self)
+                dest = _fd.asksaveasfilename(parent=parent, initialfile=fn,
+                                             title="Save file as …")
+                if dest and self._lan_client and self._lan_current_room:
+                    self._lan_client.download_file(
+                        self._lan_current_room, fid, dest_path=dest)
+                    self.chat_receive(f"  📥  Downloading '{fn}' → {dest} …")
+
+            ctk.CTkButton(
+                row_f, text="⬇ Save",
+                font=FONT_SMALL, height=26, width=64, corner_radius=4,
+                fg_color="#0d3a40", hover_color="#145060",
+                state="normal" if mode == "lan" else "disabled",
+                command=_dl,
+            ).grid(row=0, column=1, rowspan=2, padx=6, pady=4)
 
     # ─────────────────────────────────────────────────────────────────────────
     # P2P room browser  (shows locally created + joined rooms)
@@ -1617,8 +2144,16 @@ class TranscriptionView(ctk.CTk):
         ).grid(row=0, column=1)
 
     def _show_command_help(self):
-        """Trigger the help command through the controller pipeline."""
-        self._run_command("help")
+        """Show help text in the chat log (sidebar context)."""
+        try:
+            if self.controller._cmd_parser is not None:
+                help_text = self.controller._cmd_parser.help_text()
+            else:
+                help_text = "Commands not available — controller not ready."
+            for line in help_text.splitlines():
+                self.chat_receive(line)
+        except Exception as exc:
+            self.chat_receive(f"[Help Error]: {exc}")
 
     def _cmd_hist_up(self, event=None):
         if not self._cmd_history:
@@ -1664,28 +2199,74 @@ class TranscriptionView(ctk.CTk):
 
     def _toggle_sidebar(self):
         self._sidebar_open = not self._sidebar_open
-        _chat_width = 280
+        _chat_width = 290
         if self._sidebar_open:
-            self.grid_columnconfigure(2, weight=0, minsize=_chat_width)
+            self.grid_columnconfigure(1, weight=0, minsize=_chat_width)
             self._sidebar_frame.grid(
-                row=0, column=2, padx=(0, 10), pady=10, sticky="nsew"
+                row=0, column=1, padx=(0, 8), pady=8, sticky="nsew"
             )
-            self.btn_chat.configure(text="Chat <")
-            new_w = self._base_width + _chat_width + 14  # 14 = padding
+            self.btn_chat.configure(text="Chat ◀")
+            new_w = self._base_width + _chat_width + 14
             self.geometry(f"{new_w}x{self.winfo_height()}")
+            # Show welcome hint the very first time the panel opens
+            if not getattr(self, "_sidebar_welcomed", False):
+                self._sidebar_welcomed = True
+                self.chat_receive("Welcome to Spoaken Chat!")
+                self.chat_receive("")
+                self.chat_receive("  🖧  LAN  — talk to people on your Wi-Fi / network.")
+                self.chat_receive("       Click 'Host Server' to share your transcript,")
+                self.chat_receive("       or connect to a friend's IP address.")
+                self.chat_receive("")
+                self.chat_receive("  🌐  P2P  — encrypted Tor chat, works over the internet.")
+                self.chat_receive("       No account needed. Choose a username, start,")
+                self.chat_receive("       create a room, and share your .onion address.")
+                self.chat_receive("")
         else:
             self._sidebar_frame.grid_remove()
-            self.grid_columnconfigure(2, weight=0, minsize=0)
+            self.grid_columnconfigure(1, weight=0, minsize=0)
             self.btn_chat.configure(text="Chat ▶")
-            # Restore original width
             self.geometry(f"{self._base_width}x{self.winfo_height()}")
 
     def chat_receive(self, message: str):
-        """Called from controller when a chat peer sends a message."""
-        self._chat_log.configure(state="normal")
-        self._chat_log.insert("end", f"{message}\n")
-        self._chat_log.see("end")
-        self._chat_log.configure(state="disabled")
+        """Insert a colour-coded line into the chat log."""
+        cl = self._chat_log._textbox
+        cl.configure(state="normal")
+
+        m = message.strip()
+
+        if m == "":
+            cl.insert("end", "\n", "chat_system")
+
+        # My own outgoing messages
+        elif m.startswith("[Me]:") or m.startswith("⌘"):
+            cl.insert("end", f"{message}\n", "chat_me")
+
+        # Error / failure lines
+        elif any(x in m for x in ("✗", "error", "Error", "failed", "Failed")):
+            cl.insert("end", f"{message}\n", "chat_error")
+
+        # Status / system lines (indented, icons, separators)
+        elif (
+            m.startswith("  ") or m.startswith("✔") or m.startswith("⬡")
+            or m.startswith("─") or m.startswith("[") or m.startswith("  ──")
+            or m.startswith("Option") or m.startswith("  How")
+        ):
+            cl.insert("end", f"{message}\n", "chat_system")
+
+        # Section headers / welcome text
+        elif "Welcome" in m or m.startswith("🌐") or m.startswith("🖧"):
+            cl.insert("end", f"{message}\n", "chat_header")
+
+        # Peer message — "Username: some text" pattern (most important, stands out)
+        elif ":" in m and not m.startswith(" "):
+            # Bold white for peer messages so they jump out
+            cl.insert("end", f"{message}\n", "chat_peer")
+
+        else:
+            cl.insert("end", f"{message}\n", "chat_system")
+
+        cl.see("end")
+        cl.configure(state="disabled")
 
     def _on_chat_send(self, event=None):
         msg = self._chat_entry.get().strip()
@@ -1766,7 +2347,11 @@ class TranscriptionView(ctk.CTk):
     def _on_lan_connected(self):
         self.btn_lan_connect.configure(state="disabled")
         self.btn_lan_disconnect.configure(state="normal")
-        self.chat_receive("[LAN]: ✔ Connected")
+        try:
+            self._conn_status_lbl.configure(text="  ● connected", text_color=TXT_VOSK)
+        except Exception:
+            pass
+        self.chat_receive("✔  Connected to LAN server")
 
     def _on_lan_disconnect(self):
         if self._lan_client:
@@ -1778,33 +2363,44 @@ class TranscriptionView(ctk.CTk):
         self.btn_lan_disconnect.configure(state="disabled")
         self.cmb_room.configure(values=["(not connected)"])
         self.cmb_room.set("(not connected)")
-        self.chat_receive("[LAN]: Disconnected.")
+        try:
+            self._conn_status_lbl.configure(text="  ● offline", text_color=STA_IDLE)
+        except Exception:
+            pass
+        self.chat_receive("⬡  Disconnected from LAN server")
 
     def _on_lan_scan(self):
-        self.chat_receive("[LAN]: Scanning for servers …")
+        self.chat_receive("🔍  Scanning your network for Spoaken servers …")
         def _scan():
             try:
                 from spoaken_chat import discover_servers
                 servers = discover_servers(wait=2.0)
                 if servers:
+                    self.after(0, lambda: self.chat_receive(
+                        f"  Found {len(servers)} server(s):"
+                    ))
                     for s in servers:
                         self.after(0, lambda s=s: self.chat_receive(
-                            f"[LAN]: Found  {s.name}  @ {s.ip}:{s.port}"
-                            f"  ({s.room_count} rooms)"
+                            f"  ✔  {s.name}  ·  {s.ip}:{s.port}"
+                            f"  ({s.room_count} room{'s' if s.room_count != 1 else ''})"
                         ))
-                        # Auto-fill the host/port fields with first result
+                        # Auto-fill host/port with the first result
                         self.after(0, lambda s=s: (
                             self._lan_host_entry.delete(0, "end"),
                             self._lan_host_entry.insert(0, s.ip),
                             self._lan_port_entry.delete(0, "end"),
                             self._lan_port_entry.insert(0, str(s.port)),
                         ))
+                    self.after(0, lambda: self.chat_receive(
+                        "  Fields filled in — click Connect to join."
+                    ))
                 else:
                     self.after(0, lambda: self.chat_receive(
-                        "[LAN]: No servers found on this network."
+                        "  No servers found.  Ask a friend to click 'Host Server',"
+                        " then scan again."
                     ))
             except Exception as e:
-                self.after(0, lambda: self.chat_receive(f"[LAN Scan Error]: {e}"))
+                self.after(0, lambda: self.chat_receive(f"  Scan error: {e}"))
         threading.Thread(target=_scan, daemon=True).start()
 
     def _on_lan_event(self, event: dict):
@@ -1822,17 +2418,24 @@ class TranscriptionView(ctk.CTk):
                 self.cmb_room.configure(values=n),
                 self.cmb_room.set(n[0]),
             ))
+            count = len(rooms)
             self.after(0, lambda: self.chat_receive(
-                f"[LAN]: {len(rooms)} room(s) available"
+                f"  {count} room{'s' if count != 1 else ''} available"
+                + ("  — click the room picker to join one." if count else
+                   "  — create one with + Create.")
             ))
 
         elif t == "m.room.joined":
             room_name = c.get("name", "?")
             self.after(0, lambda: self.chat_receive(
-                f"[LAN]: ✔ Joined room '{room_name}'"
+                f"  ✔  Joined room '{room_name}'"
             ))
             history = c.get("history", [])
-            for ev in history[-20:]:   # show last 20 events
+            if history:
+                self.after(0, lambda: self.chat_receive(
+                    f"  ── last {min(len(history), 20)} message(s) ──"
+                ))
+            for ev in history[-20:]:
                 if ev.get("type") == "m.room.message":
                     body   = ev.get("content", {}).get("body", "")
                     sender = ev.get("sender", "?").split("@")[1].split(":")[0] \
@@ -1846,13 +2449,13 @@ class TranscriptionView(ctk.CTk):
             if "@" in sender:
                 sender = sender.split("@")[1].split(":")[0]
             self.after(0, lambda s=sender, b=body:
-                self.chat_receive(f"[{s}]: {b}"))
+                self.chat_receive(f"{s}: {b}"))
 
         elif t == "m.room.created":
             room_id = c.get("room_id", "")
             name    = c.get("name", "room")
             self.after(0, lambda: self.chat_receive(
-                f"[LAN]: Room '{name}' created — joining …"
+                f"  ✔  Room '{name}' created — joining …"
             ))
             if self._lan_client and room_id:
                 self._lan_current_room = room_id
@@ -1861,8 +2464,9 @@ class TranscriptionView(ctk.CTk):
         elif t == "m.room.member":
             membership = c.get("membership", "")
             uname      = c.get("username", "?")
+            symbol     = "→" if membership == "join" else "←"
             self.after(0, lambda: self.chat_receive(
-                f"[LAN]: {uname} {membership}"
+                f"  {symbol}  {uname} {membership}ed"
             ))
 
         elif t == "m.client.disconnected":
@@ -1870,14 +2474,30 @@ class TranscriptionView(ctk.CTk):
 
         elif t == "m.error":
             err = c.get("error", "unknown error")
-            self.after(0, lambda: self.chat_receive(f"[LAN Error]: {err}"))
+            self.after(0, lambda: self.chat_receive(f"  ✗  {err}"))
 
         elif t in ("m.auth.ok",):
-            pass   # handled elsewhere
+            pass
 
         elif t == "m.server.shutdown":
-            self.after(0, lambda: self.chat_receive("[LAN]: Server shutting down."))
+            self.after(0, lambda: self.chat_receive("  Server is shutting down …"))
             self.after(0, self._on_lan_disconnect)
+
+        elif t == "m.file.list":
+            files = c.get("files", [])
+            self.after(0, lambda fl=files: self._on_file_list_received(fl, mode="lan"))
+
+        elif t in ("m.file.received", "m.file.sent"):
+            fname  = c.get("filename", "file")
+            size   = c.get("size", 0)
+            path   = c.get("_saved_path", "")
+            kb     = size // 1024 if size else 0
+            if t == "m.file.received":
+                msg = f"  📥  Received '{fname}'  ({kb} KB)" + (f"\n       → {path}" if path else "")
+                self.after(0, lambda m=msg: self.chat_receive(m))
+            else:
+                self.after(0, lambda f=fname, k=kb: self.chat_receive(
+                    f"  📤  Sent '{f}'  ({k} KB)"))
 
     # ─────────────────────────────────────────────────────────────────────────
     # Room picker popup
@@ -2468,7 +3088,7 @@ class TranscriptionView(ctk.CTk):
         if self.cmb_whisper.get() not in whisper_models:
             self.cmb_whisper.set(whisper_models[0])
 
-        self.controller.view.update_console(
+        self.update_console(
             f"[Console]: model list refreshed — "
             f"{len([m for m in vosk_models if not m.startswith('(')])} Vosk, "
             f"{len([m for m in whisper_models if not m.startswith('(')])} Whisper"
@@ -2548,30 +3168,109 @@ class TranscriptionView(ctk.CTk):
         self.after(0, self.set_waveform_state, state)
 
     def _on_toggle_port(self):
-        """Toggle the chat port and update button state with immediate feedback."""
-        self.controller.toggle_chat_port()
+        """
+        LAN Access toggle.
+
+        OFF → amber  "LAN Access: Off"   (port closed, clicking will open)
+        ON  → red    "LAN Access: On"    (port open,  clicking will close)
+
+        Button is disabled for the duration of the toggle to block double-clicks;
+        update_chat_port_btn() re-enables it once the server confirms its new state.
+        """
+        self.btn_port.configure(state="disabled")
+
+        if self._port_on:
+            # ── TURNING OFF — close port + full teardown ───────────────────
+            self.controller.toggle_chat_port()
+
+            if self._lan_client and self._lan_client.is_connected():
+                try:
+                    self._lan_client.disconnect()
+                except Exception:
+                    pass
+                self._lan_client       = None
+                self._lan_current_room = None
+                self._lan_rooms_cache  = {}
+                try:
+                    self.btn_lan_connect.configure(state="normal")
+                    self.btn_lan_disconnect.configure(state="disabled")
+                    self.cmb_room.configure(values=["(not connected)"])
+                    self.cmb_room.set("(not connected)")
+                except Exception:
+                    pass
+
+            if self._p2p_node:
+                try:
+                    self._p2p_node.stop()
+                except Exception:
+                    pass
+                self._p2p_node         = None
+                self._p2p_current_room = None
+                self._p2p_rooms_cache  = {}
+                try:
+                    self.btn_p2p_start.configure(state="normal")
+                    self.btn_p2p_stop.configure(state="disabled")
+                    self._p2p_status_lbl.configure(
+                        text="  Stopped", text_color=TXT_DIM)
+                    self._btn_copy_onion.grid_remove()
+                except Exception:
+                    pass
+
+            self.chat_receive("")
+            self.chat_receive("  ✗  LAN access disabled — port is now closed.")
+            self.chat_receive("     All rooms and connections have been cleared.")
+            self.chat_receive("")
+
+        else:
+            # ── TURNING ON — open port ─────────────────────────────────────
+            self.controller.toggle_chat_port()
 
     def update_chat_port_btn(self, is_open: bool):
         """
-        Update the Port toggle button to reflect the current server state.
-        is_open=True  → bright green  'Port: ON'
-        is_open=False → dim           'Port: OFF'
+        Reflect LAN server state on the toggle button and always re-enable it.
+
+        OFF  →  amber / yellow   "LAN Access: Off"   (port closed)
+        ON   →  red              "LAN Access: On"    (port open, prominent)
+
+        The button was disabled in _on_toggle_port to block double-clicks while
+        the server was starting or stopping; this method re-enables it.
         """
         self._port_on = is_open
         if is_open:
+            # ON = red — active, prominent, easy to see it needs turning off
             self.btn_port.configure(
-                text="Port: ON",
-                fg_color="#0d5c30",
-                hover_color="#128040",
-                text_color="#00e87a",
+                text="LAN Access: On",
+                fg_color="#5a0a0a",
+                hover_color="#7a1010",
+                text_color="#ff8080",
+                border_color="#cc3333",
+                border_width=1,
+                state="normal",
             )
+            try:
+                self._conn_status_lbl.configure(
+                    text="  ● hosting", text_color="#ff6060")
+            except Exception:
+                pass
+            self.chat_receive("")
+            self.chat_receive("  ✔  LAN access enabled — others on your network can connect.")
+            self.chat_receive("")
         else:
+            # OFF = amber — inviting, shows it can be enabled
             self.btn_port.configure(
-                text="Port: OFF",
-                fg_color="#1a2640",
-                hover_color="#253560",
-                text_color=TXT_DIM,
+                text="LAN Access: Off",
+                fg_color="#3d2e00",
+                hover_color="#5a4400",
+                text_color="#f0c040",
+                border_color="#f0c040",
+                border_width=1,
+                state="normal",
             )
+            try:
+                self._conn_status_lbl.configure(
+                    text="  ● offline", text_color=STA_IDLE)
+            except Exception:
+                pass
 
     def thread_safety_chat_port_btn(self, is_open: bool):
         self.after(0, self.update_chat_port_btn, is_open)
@@ -2603,10 +3302,40 @@ class TranscriptionView(ctk.CTk):
     # ─────────────────────────────────────────────────────────────────────────
 
     def update_console(self, message: str):
-        self.console.configure(state="normal")
-        self.console.insert("end", f"{message}\n")
-        self.console.see("end")
-        self.console.configure(state="disabled")
+        """Insert a timestamped, colour-coded line into the console."""
+        tb = self.console._textbox
+        tb.configure(state="normal")
+
+        m = message.strip()
+        m_lower = m.lower()
+
+        # Pick severity tag
+        if any(x in m_lower for x in (
+            "error", "exception", "traceback", "fatal", "✘", " ✗ ",
+            "failed to", "not found", "not installed",
+        )):
+            tag = "con_error"
+        elif any(x in m_lower for x in (
+            "warning", "warn", "[!]", "missing", "could not", "disabled",
+        )):
+            tag = "con_warning"
+        elif any(x in m_lower for x in (
+            "✔", "✓", "ready", "loaded", "complete", "installed",
+            "enabled", "started", "success",
+        )):
+            tag = "con_success"
+        elif m == "" or m.startswith("─") or m.startswith("══"):
+            tb.insert("end", "\n", "con_sep")
+            tb.configure(state="disabled")
+            return
+        else:
+            tag = "con_info"
+
+        ts = time.strftime("%H:%M")
+        tb.insert("end", f" {ts} ", "con_ts")
+        tb.insert("end", f"{message}\n", tag)
+        tb.see("end")
+        tb.configure(state="disabled")
 
     def thread_safety_console(self, message: str):
         self.after(0, self.update_console, message)

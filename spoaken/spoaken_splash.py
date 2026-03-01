@@ -17,8 +17,9 @@ Changes in this revision
 import sys
 import platform
 import importlib
+import tkinter as tk
 import customtkinter as ctk
-from PIL import Image
+from PIL import Image, ImageTk
 
 # ── Hard Python version gate ──────────────────────────────────────────────────
 _MAJOR, _MINOR = sys.version_info[:2]
@@ -35,13 +36,18 @@ if (_MAJOR, _MINOR) < (3, 9):
 _OPTIONAL_PKGS = {
     "vosk":             "pip install vosk",
     "faster_whisper":   "pip install faster-whisper",
-    "happytransformer": 'pip install "happytransformer<4.0.0"',
     "sounddevice":      "pip install sounddevice",
     "numpy":            "pip install numpy",
     "pyautogui":        "pip install pyautogui",
     "rapidfuzz":        "pip install rapidfuzz",
+    # ── Optional / online-only packages ──────────────────────────────────────
+    # happytransformer requires a pre-downloaded model cache (Update & Repair
+    # → T5 Models → Download & Cache).  Missing here is safe — grammar
+    # correction is simply disabled until a local model is cached.
     "noisereduce":      "pip install noisereduce    (optional — noise suppression)",
-    "deep_translator":  "pip install deep-translator  (optional — translation)",
+    "deep_translator":  "pip install deep-translator  (optional — online translation only)",
+    "stem":             "pip install stem           (optional — Tor control)",
+    "tor":              "pip install tor            (optional — Tor anonymity)",
 }
 
 def _check_missing_packages() -> list[str]:
@@ -139,35 +145,70 @@ class SpoakenSplash(ctk.CTk):
         # ── App icon + title ──────────────────────────────────────────────────
         from pathlib import Path
         _ART_DIR = Path(__file__).parent / "Art"
-        _splash_icon = None
-        for _name in ("icon.png", "icon.ico", "logo.png", "logo.ico"):
-            _p = _ART_DIR / _name
-            if _p.exists():
-                try:
-                    _img = Image.open(_p).resize((52, 52), Image.LANCZOS)
-                    _splash_icon = ctk.CTkImage(light_image=_img, dark_image=_img, size=(52, 52))
-                except Exception:
-                    pass
-                break
 
-        if _splash_icon:
-            ctk.CTkLabel(
+        # ── Animated GIF (splash.gif) — preferred over static icons ────────────
+        self._gif_frames: list = []
+        self._gif_delays: list = []
+        self._gif_lbl          = None
+        self._gif_idx          = 0
+
+        _gif_path = _ART_DIR / "splash.gif"
+        if _gif_path.exists():
+            try:
+                _gif = Image.open(_gif_path)
+                while True:
+                    _frame = _gif.copy().convert("RGBA").resize((200, 100), Image.LANCZOS)
+                    self._gif_frames.append(ImageTk.PhotoImage(_frame))
+                    self._gif_delays.append(max(50, _gif.info.get("duration", 100)))
+                    try:
+                        _gif.seek(_gif.tell() + 1)
+                    except EOFError:
+                        break
+            except Exception:
+                self._gif_frames = []
+
+        if self._gif_frames:
+            # Use a plain tk.Label so we can swap PhotoImage frames
+            self._gif_lbl = tk.Label(
                 self.main_frame,
-                image=_splash_icon, text="",
-            ).pack(pady=(20, 4))
-            ctk.CTkLabel(
-                self.main_frame,
-                text="SPOAKEN",
-                font=("Segoe UI Semibold", 28),
-                text_color=TXT_TEAL,
-            ).pack(pady=(0, 2))
+                image=self._gif_frames[0],
+                bg=BG_PANEL, bd=0, highlightthickness=0,
+            )
+            self._gif_lbl.pack(pady=(20, 4))
+            self.after(self._gif_delays[0], self._animate_gif)
         else:
-            ctk.CTkLabel(
-                self.main_frame,
-                text="◈  SPOAKEN",
-                font=("Segoe UI Semibold", 30),
-                text_color=TXT_TEAL,
-            ).pack(pady=(28, 2))
+            # ── Static logo fallback (logo.png / logo.ico) ─────────────────────
+            _splash_icon = None
+            for _name in ("logo.png", "logo.ico", "icon.png", "icon.ico"):
+                _p = _ART_DIR / _name
+                if _p.exists():
+                    try:
+                        _img = Image.open(_p).resize((52, 52), Image.LANCZOS)
+                        _splash_icon = ctk.CTkImage(
+                            light_image=_img, dark_image=_img, size=(52, 52)
+                        )
+                    except Exception:
+                        pass
+                    break
+
+            if _splash_icon:
+                ctk.CTkLabel(
+                    self.main_frame,
+                    image=_splash_icon, text="",
+                ).pack(pady=(20, 4))
+            else:
+                # Plain spacer — no diamond, no placeholder text
+                ctk.CTkFrame(
+                    self.main_frame, fg_color="transparent", height=24,
+                ).pack(pady=(20, 4))
+
+        # Title — always shown below the icon / gif / spacer
+        ctk.CTkLabel(
+            self.main_frame,
+            text="SPOAKEN",
+            font=("Segoe UI Semibold", 28 if self._gif_frames or True else 30),
+            text_color=TXT_TEAL,
+        ).pack(pady=(0, 2))
 
         ctk.CTkLabel(
             self.main_frame,
@@ -216,6 +257,22 @@ class SpoakenSplash(ctk.CTk):
 
         # Safety timeout
         self.after(30_000, self._finish)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Animated GIF loop
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _animate_gif(self):
+        """Advance the splash.gif animation by one frame, then schedule the next."""
+        if not self.winfo_exists() or not self._gif_frames or self._gif_lbl is None:
+            return
+        self._gif_idx = (self._gif_idx + 1) % len(self._gif_frames)
+        try:
+            self._gif_lbl.configure(image=self._gif_frames[self._gif_idx])
+        except Exception:
+            return
+        delay = self._gif_delays[self._gif_idx]
+        self.after(delay, self._animate_gif)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Drag support
@@ -305,11 +362,13 @@ class SpoakenSplash(ctk.CTk):
     def _finish(self):
         """Cancel pending after() callbacks and close the splash."""
         try:
-            for after_id in self.tk.call("after", "info"):
-                try:
-                    self.after_cancel(after_id)
-                except Exception:
-                    pass
+            ids = self.tk.call("after", "info")
+            if ids:
+                for after_id in (ids if isinstance(ids, tuple) else str(ids).split()):
+                    try:
+                        self.after_cancel(after_id)
+                    except Exception:
+                        pass
         except Exception:
             pass
         if self.winfo_exists():

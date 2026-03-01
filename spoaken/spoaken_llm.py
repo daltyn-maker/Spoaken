@@ -209,7 +209,14 @@ def translate(
             except Exception as exc:
                 print(f"[LLM Translate]: {chosen} failed — {exc}", file=sys.stderr)
 
-    # ── Fallback: deep_translator ─────────────────────────────────────────────
+    # ── Fallback: deep_translator (ONLINE ONLY) ───────────────────────────────
+    # deep_translator sends text to Google's API — skip it when offline.
+    try:
+        from spoaken_config import is_online as _is_online
+        if not _is_online():
+            return text   # offline — return original rather than fail
+    except Exception:
+        pass
     try:
         from deep_translator import GoogleTranslator
         result = GoogleTranslator(source="auto", target=target_lang).translate(text)
@@ -360,7 +367,7 @@ def background_process_and_export(
     return None
 
 
-
+def ensure_ollama_pkg(log_fn=print) -> bool:
     """
     Ensure the 'ollama' Python package is installed.
     Returns True if available after the call.

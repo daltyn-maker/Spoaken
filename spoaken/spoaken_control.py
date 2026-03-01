@@ -359,23 +359,26 @@ class TranscriptionController:
             return
         if self._sysenviron and not self._sysenviron.can_run_llm():
             return
-        if self._llm_bg_running:
-            return
 
-        budget     = self._llm_chunk_budget()
-        all_words  = " ".join(self.model.data_store).split()
-        new_count  = len(all_words) - self._llm_word_cursor
+        with self._llm_bg_lock:
+            if self._llm_bg_running:
+                return
 
-        # Only proceed when we have at least a full chunk's worth of new text
-        if new_count < budget:
-            return
+            budget     = self._llm_chunk_budget()
+            all_words  = " ".join(self.model.data_store).split()
+            new_count  = len(all_words) - self._llm_word_cursor
 
-        # Grab exactly budget-many new words
-        chunk_words = all_words[self._llm_word_cursor : self._llm_word_cursor + budget]
-        chunk_text  = " ".join(chunk_words)
-        cursor_end  = self._llm_word_cursor + len(chunk_words)
+            # Only proceed when we have at least a full chunk's worth of new text
+            if new_count < budget:
+                return
 
-        self._llm_bg_running = True
+            # Grab exactly budget-many new words
+            chunk_words = all_words[self._llm_word_cursor : self._llm_word_cursor + budget]
+            chunk_text  = " ".join(chunk_words)
+            cursor_end  = self._llm_word_cursor + len(chunk_words)
+
+            self._llm_bg_running = True
+
         threading.Thread(
             target=self._llm_chunk_worker,
             args=(chunk_text, cursor_end, self._llm_mode, self._llm_model,
@@ -541,8 +544,16 @@ class TranscriptionController:
         if self._cmd_parser is None:
             return self._parse_command_fallback(text)
         handled, output = self._cmd_parser.parse(text)
-        if handled and output:
-            self.view.thread_safety_console(output)
+        if handled:
+            if output:
+                self.view.thread_safety_console(output)
+        else:
+            self.view.thread_safety_console(
+                f"[Command]: '{text.strip()}' — not recognised\n"
+                f"  Usage:  command  arg          e.g.  translate french\n"
+                f"          spoaken.command(arg)  e.g.  spoaken.translate(french)\n"
+                f"  Type  help  to see every available command."
+            )
         return handled
 
     def _parse_command_fallback(self, text: str) -> bool:
@@ -789,6 +800,7 @@ class TranscriptionController:
             self.view.thread_safety_insert_pending(
                 f"\n[Whisper]: {text}\n", seg_id, tag="whisper"
             )
+            self.model.data_store.append(text)
             self.model.whisper_store.append(text)
             self._broadcast(f"[Whisper] {text}")
             self._whisper_logger.info(f"[Whisper]: {text}\n")
@@ -893,7 +905,7 @@ class TranscriptionController:
                 raw_text, final_text = self.model.run_polish()
                 self.model.data_store = []
                 self._final_logger.info("── POLISHED ──────────────────────────────\n")
-                f.write(f"{final_text}\n\n")
+                self._final_logger.info(f"{final_text}\n\n")
                 self.view.thread_safety_console(
                     "[Console]: polish saved to final_session_log.txt"
                 )
@@ -1027,14 +1039,33 @@ class TranscriptionController:
             self._chat_server.send(message)
 
     def toggle_chat_port(self):
+        """
+        Start or stop the LAN chat server and update the GUI button.
+
+        ChatServer.start() (the shim layer) returns None — it does not
+        propagate SpoakenLANServer's True/False result.  Passing that None to
+        update_chat_port_btn() evaluates as falsy, so the button always stayed
+        in the OFF state even after a successful start.
+
+        Fix: call start(), then schedule a check of is_open() after 400 ms to
+        let the asyncio loop bind the port.  stop() is synchronous so we can
+        update the button immediately there.
+        """
         if self._chat_server is None:
             return
         if self._chat_server.is_open():
             self._chat_server.stop()
             self.view.after(0, self.view.update_chat_port_btn, False)
         else:
-            ok = self._chat_server.start()
-            self.view.after(0, self.view.update_chat_port_btn, ok)
+            self._chat_server.start()
+            def _check():
+                is_open = self._chat_server.is_open()
+                self.view.update_chat_port_btn(is_open)
+                if not is_open:
+                    self.view.thread_safety_console(
+                        "[LAN]: server failed to start — port may already be in use"
+                    )
+            self.view.after(400, _check)
 
     def _broadcast(self, text: str):
         if self._chat_server: self._chat_server.send(text)
@@ -1130,7 +1161,7 @@ class TranscriptionController:
                     if raw_text:
                         summary = summarize(raw_text)
                         self._final_logger.info("── SUMMARY ───────────────────────────────\n")
-                        f.write(f"{summary}\n\n")
+                        self._final_logger.info(f"{summary}\n\n")
                         self.view.thread_safety_console(
                             "[Console]: summary saved → final_session_log.txt"
                         )
@@ -1147,7 +1178,7 @@ class TranscriptionController:
                 try:
                     raw_text, final_text = self.model.run_polish()
                     self._final_logger.info("── FINAL SESSION ──────────────────────\n")
-                    f.write(f"RAW:\n{raw_text}\n\nPOLISHED:\n{final_text}\n\n")
+                    self._final_logger.info(f"RAW:\n{raw_text}\n\nPOLISHED:\n{final_text}\n\n")
                     self.model.data_store = []
                     self.view.thread_safety_console("[Console]: final log written")
                 except Exception as exc:

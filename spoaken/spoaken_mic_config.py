@@ -416,9 +416,9 @@ class MicConfigPanel(ctk.CTkToplevel):
             row=2, column=0, sticky="ew"
         )
 
-        # Outer container sits at row 2, always visible
+        # Outer container sits at row 3, always visible
         action_row = ctk.CTkFrame(self, fg_color=BG_PANEL, corner_radius=0)
-        action_row.grid(row=2, column=0, sticky="ew", padx=0, pady=0)
+        action_row.grid(row=3, column=0, sticky="ew", padx=0, pady=0)
         action_row.grid_columnconfigure(0, weight=1)   # Apply stretches
         action_row.grid_columnconfigure(1, weight=0)   # Reset fixed
         action_row.grid_columnconfigure(2, weight=0)   # Close fixed
@@ -450,12 +450,12 @@ class MicConfigPanel(ctk.CTkToplevel):
 
     def _build_log(self):
         ctk.CTkLabel(self._scroll_frame, text="Diagnostics", font=FONT_SMALL, text_color=COLOR_DIM,
-                     anchor="w").grid(row=6, column=0, padx=16, pady=(4, 0), sticky="w")
+                     anchor="w").grid(row=7, column=0, padx=16, pady=(4, 0), sticky="w")
         self._log_box = ctk.CTkTextbox(
             self._scroll_frame, fg_color=BG_INPUT, border_color=BORDER, border_width=1,
             font=FONT_MONO, text_color=COLOR_CONSOLE, corner_radius=8, wrap="word", height=110,
         )
-        self._log_box.grid(row=7, column=0, padx=14, pady=(2, 14), sticky="ew")
+        self._log_box.grid(row=8, column=0, padx=14, pady=(2, 14), sticky="ew")
         self._log_box.configure(state="disabled")
 
     # ── Card helper ────────────────────────────────────────────────────────────
@@ -818,8 +818,6 @@ class MicConfigPanel(ctk.CTkToplevel):
                 _sc._global_vad.set_aggressiveness(_sc._mic_config["vad_agg"])
                 _sc._global_vad.set_min_speech(_sc._mic_config["min_speech"])
                 _sc._global_vad.set_silence_gap(_sc._mic_config["silence_gap"])
-            else:
-                _sc._global_vad = None   # force re-create on next use
 
             self._log(
                 f"[Apply]: device={dev}  VAD={'on' if _sc._mic_config['vad_enabled'] else 'off'}"
