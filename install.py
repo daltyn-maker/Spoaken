@@ -679,21 +679,21 @@ def write_runtime_config(cfg: dict, install_dir: Path, online: bool = True):
             "whisper_enabled":        True,
             "whisper_compute":        "auto",
             "vosk_model":             cfg.get("vosk_model", None),
-            "vosk_enabled":           cfg.get("vosk_enabled", False),
+            "vosk_enabled":           cfg.get("vosk_enabled", True),
             "enable_giga_model":      False,
             "vosk_model_accurate":    "vosk-model-en-us-0.42-gigaspeech",
             # ── Hardware ──────────────────────────────────────────────────────
-            "gpu_enabled":            cfg.get("gpu", False),
+            "gpu_enabled":            cfg.get("gpu", True),
             "mic_device":             None,
-            "noise_suppression":      cfg.get("noise", False),
+            "noise_suppression":      cfg.get("noise", True),
             # ── Grammar ───────────────────────────────────────────────────────
             "grammar_enabled":        cfg.get("grammar", True),
             "t5_model":               "vennify/t5-base-grammar-correction",
             # ── Chat / networking ──────────────────────────────────────────────
-            "chat_server_enabled":    cfg.get("chat_server_enabled", False),
+            "chat_server_enabled":    cfg.get("chat_server_enabled", True),
             "chat_server_port":       cfg.get("chat_server_port", 55300),
             "chat_server_token":      cfg.get("chat_server_token", "spoaken"),
-            "android_stream_enabled": cfg.get("android_stream_enabled", False),
+            "android_stream_enabled": cfg.get("android_stream_enabled", True),
             "android_stream_port":    cfg.get("android_stream_port", 55301),
             "bind_address":           "",
             # ── Security / PKI ────────────────────────────────────────────────
@@ -746,7 +746,7 @@ def interactive_config() -> dict:
         print(f"  {i}. {m}{suffix}")
     while True:
         try:
-            vc = int(input("\nSelect Vosk model [default: 0 = none]: ") or "0")
+            vc = int(input("\nSelect Vosk model [default: 1 = vosk-model-small-en-us-0.15]: ") or "1")
             if vc == 0:
                 vosk_model, vosk_enabled = None, False
             else:
@@ -755,10 +755,10 @@ def interactive_config() -> dict:
         except (ValueError, IndexError):
             print("Invalid choice, try again.")
 
-    gpu_raw        = input("\nEnable GPU / CUDA acceleration? [y/N]: ").strip().lower()
+    gpu_raw        = input("\nEnable GPU / CUDA acceleration? [Y/n]: ").strip().lower()
     grammar_raw    = input("Install grammar correction (HappyTransformer/T5)? [Y/n]: ").strip().lower()
-    noise_raw      = input("Install noise suppression (noisereduce)? [y/N]: ").strip().lower()
-    llm_raw        = input("Install LLM + summarization packages (ollama, sumy, nltk)? [y/N]: ").strip().lower()
+    noise_raw      = input("Install noise suppression (noisereduce)? [Y/n]: ").strip().lower()
+    llm_raw        = input("Install LLM + summarization packages (ollama, sumy, nltk)? [Y/n]: ").strip().lower()
     vad_raw        = input("Install webrtcvad for better Voice Activity Detection? [Y/n]: ").strip().lower()
 
     print(f"\n{CYAN}── Online / Offline Mode ───────────────────────────────────{NC}")
@@ -771,18 +771,18 @@ def interactive_config() -> dict:
 
     print(f"\n{CYAN}── Chat / Networking ──────────────────────────────────────{NC}")
     print("  LAN chat lets other Spoaken users on your network connect to this machine.")
-    chat_raw       = input("Enable LAN chat server at startup? [y/N]: ").strip().lower()
+    chat_raw       = input("Enable LAN chat server at startup? [Y/n]: ").strip().lower()
     chat_port      = 55300
     chat_token     = "spoaken"
-    if chat_raw in ("y", "yes"):
+    if chat_raw not in ("n", "no"):
         port_in = input("  Chat server port [55300]: ").strip()
         chat_port  = int(port_in) if port_in.isdigit() else 55300
         token_in   = input("  Shared auth token [spoaken]: ").strip()
         chat_token = token_in or "spoaken"
 
-    android_raw  = input("Enable Android/browser live transcript stream? [y/N]: ").strip().lower()
+    android_raw  = input("Enable Android/browser live transcript stream? [Y/n]: ").strip().lower()
     android_port = 55301
-    if android_raw in ("y", "yes"):
+    if android_raw not in ("n", "no"):
         port_in = input("  Stream port [55301]: ").strip()
         android_port = int(port_in) if port_in.isdigit() else 55301
 
@@ -797,17 +797,17 @@ def interactive_config() -> dict:
         "whisper_model":          whisper_model,
         "vosk_model":             vosk_model,
         "vosk_enabled":           vosk_enabled,
-        "gpu":                    gpu_raw in ("y", "yes"),
+        "gpu":                    gpu_raw not in ("n", "no"),
         "grammar":                grammar_raw not in ("n", "no"),
-        "noise":                  noise_raw in ("y", "yes"),
+        "noise":                  noise_raw not in ("n", "no"),
         "translation":            online,   # translation is included automatically in online mode
-        "llm":                    llm_raw in ("y", "yes"),
+        "llm":                    llm_raw not in ("n", "no"),
         "vad":                    vad_raw not in ("n", "no"),
         "online":                 online,
-        "chat_server_enabled":    chat_raw in ("y", "yes"),
+        "chat_server_enabled":    chat_raw not in ("n", "no"),
         "chat_server_port":       chat_port,
         "chat_server_token":      chat_token,
-        "android_stream_enabled": android_raw in ("y", "yes"),
+        "android_stream_enabled": android_raw not in ("n", "no"),
         "android_stream_port":    android_port,
         "install_dir":            idir,
     }
@@ -817,15 +817,15 @@ def run_install(cfg: dict):
     install_dir     = Path(cfg.get("install_dir", os.path.expanduser("~/spoaken")))
     whisper_model   = cfg.get("whisper_model", "base.en")
     vosk_model      = cfg.get("vosk_model", None)
-    vosk_enabled    = cfg.get("vosk_enabled", False)
-    gpu             = cfg.get("gpu", False)
+    vosk_enabled    = cfg.get("vosk_enabled", True)
+    gpu             = cfg.get("gpu", True)
     grammar         = cfg.get("grammar", True)
-    noise           = cfg.get("noise", False)
-    translation     = cfg.get("translation", False)
-    llm             = cfg.get("llm", False)
+    noise           = cfg.get("noise", True)
+    translation     = cfg.get("translation", True)
+    llm             = cfg.get("llm", True)
     vad             = cfg.get("vad", True)
-    chat_enabled    = cfg.get("chat_server_enabled", False)
-    android_enabled = cfg.get("android_stream_enabled", False)
+    chat_enabled    = cfg.get("chat_server_enabled", True)
+    android_enabled = cfg.get("android_stream_enabled", True)
     whisper_dir     = install_dir / "models" / "whisper"
     vosk_dir        = install_dir / "models" / "vosk"
 
