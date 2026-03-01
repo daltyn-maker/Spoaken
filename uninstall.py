@@ -42,7 +42,20 @@ import textwrap
 from pathlib import Path
 
 # ── Colour helpers ─────────────────────────────────────────────────────────────
-_USE_COLOR = sys.stdout.isatty() and platform.system() != "Windows"
+# ── Colour helpers ─────────────────────────────────────────────────────────────
+def _supports_color() -> bool:
+    if not sys.stdout.isatty():
+        return False
+    if platform.system() == "Windows":
+        # Windows Terminal and ConEmu set WT_SESSION / ANSICON; PowerShell 7+ also works
+        return bool(
+            os.environ.get("WT_SESSION")
+            or os.environ.get("ANSICON")
+            or os.environ.get("TERM_PROGRAM")
+        )
+    return True
+
+_USE_COLOR = _supports_color()
 
 def _c(code: str, text: str) -> str:
     return f"\033[{code}m{text}\033[0m" if _USE_COLOR else text
@@ -89,11 +102,15 @@ _PIP_PACKAGES = [
     "pywinauto",
     # Signal processing (used by EQ filter)
     "scipy",
+    # LAN chat + async HTTP (online features)
+    "websockets",
+    "aiohttp",
+    "aiofiles",
     # Crypto (used by secure LAN chat)
     "cryptography",
-    # Tor (optional anonymity)
+    # Tor relay support (pip packages — Tor daemon itself is a system package)
     "stem",
-    "tor",
+    "PySocks",
 ]
 
 # ── Source file names (relative to the spoaken package directory) ──────────────
@@ -144,15 +161,10 @@ def _resolve_paths() -> dict:
         log_dir     = Path(_paths.LOG_DIR)
         art_dir     = Path(_paths.ART_DIR)
     except Exception:
-        # Fallback layout.
-        # Case A: this script is inside the installed  <install_dir>/spoaken/  folder.
-        # Case B: this script is in the downloaded repo root; source files live in spoaken/ subdir.
-        # Detect Case B by checking whether a spoaken/ sibling directory exists.
         spoaken_subdir = script_dir / "spoaken"
         if spoaken_subdir.is_dir():
-            # Running from repo root — actual sources are in spoaken/
-            root_dir    = script_dir
-            script_dir  = spoaken_subdir          # override for source-file scanning below
+            root_dir   = script_dir
+            script_dir = spoaken_subdir
         else:
             root_dir    = script_dir.parent
         vosk_dir    = root_dir / "models" / "vosk"
@@ -166,7 +178,7 @@ def _resolve_paths() -> dict:
 
     return {
         "root_dir"        : root_dir,
-        "spoaken_dir"     : script_dir,   # may be overridden to spoaken/ subfolder
+        "spoaken_dir"     : script_dir,
         "vosk_dir"        : vosk_dir,
         "whisper_dir"     : whisper_dir,
         "happy_dir"       : happy_dir,
@@ -192,25 +204,21 @@ def _is_installed(pkg_name: str) -> bool:
 
 
 def _detect_package_manager() -> str | None:
-    """Return 'dnf', 'rpm', 'apt', or None depending on what's available."""
     import shutil as _shutil
     for pm in ("dnf", "apt-get"):
         if _shutil.which(pm):
             return pm
-    if _shutil.which("rpm"):
-        return "rpm"
     return None
 
 
-_PIP_TO_SYSTEM: dict[str, str] = {
-    # Maps pip package name → system package name (dnf/apt)
-    "Pillow":       ("python3-pillow",        "python3-pil"),
-    "numpy":        ("python3-numpy",         "python3-numpy"),
-    "scipy":        ("python3-scipy",         "python3-scipy"),
-    "cryptography": ("python3-cryptography",  "python3-cryptography"),
-    "rapidfuzz":    ("python3-rapidfuzz",     "python3-rapidfuzz"),
-    "customtkinter":("python3-customtkinter", "python3-customtkinter"),
-    "sounddevice":  ("python3-sounddevice",   "python3-sounddevice"),
+_PIP_TO_SYSTEM: dict[str, tuple[str, str]] = {
+    "Pillow":       ("python3-pillow",       "python3-pil"),
+    "numpy":        ("python3-numpy",        "python3-numpy"),
+    "scipy":        ("python3-scipy",        "python3-scipy"),
+    "cryptography": ("python3-cryptography", "python3-cryptography"),
+    "rapidfuzz":    ("python3-rapidfuzz",    "python3-rapidfuzz"),
+    "customtkinter":("python3-customtkinter","python3-customtkinter"),
+    "sounddevice":  ("python3-sounddevice",  "python3-sounddevice"),
 }
 
 
@@ -236,10 +244,7 @@ def _pip_uninstall(pkg: str, dry_run: bool = False) -> bool:
             return True
 
         combined = (result.stderr + result.stdout).lower()
-        rpm_hint = "installed by rpm" in combined or "externally managed" in combined
-
-        if rpm_hint:
-            # Try to remove via the system package manager instead
+        if "installed by rpm" in combined or "externally managed" in combined:
             pm = _detect_package_manager()
             system_names = _PIP_TO_SYSTEM.get(pkg)
             if pm in ("dnf", "apt-get") and system_names:
@@ -252,20 +257,15 @@ def _pip_uninstall(pkg: str, dry_run: bool = False) -> bool:
                 if pm_result.returncode == 0:
                     print(f"  {green('✔')}  uninstalled via {pm}  {cyan(pkg)}")
                     return True
-                else:
-                    pm_err = (pm_result.stderr or pm_result.stdout).strip().splitlines()
-                    pm_err_msg = pm_err[-1] if pm_err else "(no output)"
-                    print(f"  {yellow('!')}  {pm} also failed for {pkg}  →  {pm_err_msg}")
-                    print(f"       {dim(f'Try manually:  sudo {pm} remove {sys_pkg}')}")
-                    return False
+                pm_err = (pm_result.stderr or pm_result.stdout).strip().splitlines()
+                print(f"  {yellow('!')}  {pm} also failed for {pkg}  →  {pm_err[-1] if pm_err else '(no output)'}")
+                print(f"       {dim(f'Try manually:  sudo {pm} remove {sys_pkg}')}")
+                return False
             else:
-                # No system-package mapping — advise the user
                 err_line = (result.stderr or result.stdout).strip().splitlines()[-1]
                 print(f"  {yellow('!')}  {pkg}  →  {err_line}")
-                print(f"       {dim('This package is managed by your system package manager.')}")
                 if pm:
-                    guess = f"python3-{pkg.lower()}"
-                    print(f"       {dim(f'Try manually:  sudo {pm} remove {guess}')}")
+                    print(f"       {dim(f'Try manually:  sudo {pm} remove python3-{pkg.lower()}')}")
                 return False
         else:
             err_line = (result.stderr or result.stdout).strip().splitlines()[-1]
@@ -283,46 +283,29 @@ def _pip_uninstall(pkg: str, dry_run: bool = False) -> bool:
 _PROTECTED_DIRS: list[Path] = []
 
 def _build_protected_dirs() -> list[Path]:
-    """
-    Return an expanded list of directories that the uninstaller must never remove,
-    regardless of what install root was configured.
-    """
     home = Path.home()
     candidates = [
         home,
-        home / "Documents",
-        home / "Downloads",
-        home / "Desktop",
-        home / "Pictures",
-        home / "Music",
-        home / "Videos",
-        home / "Public",
-        home / "Templates",
-        Path("/"),
-        Path("/home"),
-        Path("/usr"),
-        Path("/etc"),
-        Path("/var"),
-        Path("/opt"),
-        Path("/tmp"),
+        home / "Documents", home / "Downloads", home / "Desktop",
+        home / "Pictures",  home / "Music",     home / "Videos",
+        home / "Public",    home / "Templates",
+        Path("/"), Path("/home"), Path("/usr"), Path("/etc"),
+        Path("/var"), Path("/opt"), Path("/tmp"),
     ]
-    # Also protect any parent of the home directory
     p = home.parent
     while p != p.parent:
         candidates.append(p)
         p = p.parent
     return [c.resolve() for c in candidates if c.exists()]
 
-
 def _is_protected(path: Path) -> bool:
-    """Return True if path is a protected system/user directory that must not be deleted."""
     global _PROTECTED_DIRS
     if not _PROTECTED_DIRS:
         _PROTECTED_DIRS = _build_protected_dirs()
     try:
         resolved = path.resolve()
     except Exception:
-        return True   # if we can't resolve it, play it safe
+        return True
     return resolved in _PROTECTED_DIRS
 
 
@@ -444,11 +427,6 @@ def step_models(paths: dict, dry_run: bool, yes_all: bool) -> None:
     if not any_found:
         print(f"  {dim('No model directories found — nothing to remove.')}")
         return
-
-    total_size = sum(
-        int(_human_size(p).split()[0])
-        for p, _ in model_dirs if p.exists()
-    )
 
     print("  Found model directories:")
     for p, label in model_dirs:

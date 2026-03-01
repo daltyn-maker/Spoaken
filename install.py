@@ -99,10 +99,10 @@ def python_exe():
 def pip_run(*args, check=True):
     """Run pip as a subprocess via the current Python interpreter."""
     cmd = [python_exe(), "-m", "pip"] + list(args)
-    # On Debian-based systems newer pip needs --break-system-packages
+    # On Debian-based and Arch-based systems newer pip needs --break-system-packages
     if OS == "Linux":
         distro = detect_linux_distro()
-        if distro == "apt" and "--break-system-packages" not in args:
+        if distro in ("apt", "pacman") and "--break-system-packages" not in args:
             if args and args[0] in ("install", "upgrade"):
                 cmd.append("--break-system-packages")
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -117,7 +117,12 @@ def run(cmd, check=True, shell=False, capture=False):
         kw.update({"capture_output": True})
     result = subprocess.run(cmd, **kw)
     if check and result.returncode != 0:
-        raise RuntimeError(f"Command failed: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+        cmd_str = ' '.join(cmd) if isinstance(cmd, list) else cmd
+        detail  = ""
+        if capture:
+            detail = (result.stderr or result.stdout or "").strip()
+            detail = f": {detail}" if detail else ""
+        raise RuntimeError(f"Command failed: {cmd_str}{detail}")
     return result
 
 # ─── Download helpers ─────────────────────────────────────────────────────────
@@ -157,7 +162,12 @@ def extract_archive(archive: Path, dest: Path):
             z.extractall(dest)
     elif archive.suffix in (".gz", ".bz2", ".xz") or ".tar" in archive.name:
         with tarfile.open(archive) as t:
-            t.extractall(dest)
+            try:
+                # Python 3.12+: use safe data filter to avoid path traversal
+                t.extractall(dest, filter="data")
+            except TypeError:
+                # Python < 3.12: filter parameter not supported
+                t.extractall(dest)
     else:
         raise ValueError(f"Unknown archive type: {archive}")
 
@@ -399,12 +409,8 @@ def install_python_packages(gpu: bool = False, grammar: bool = True,
         log("Noise suppression skipped (enable later via Update window or --noise flag).")
 
     # ── Optional: translation (online only) ───────────────────────────────────
-    if translation:
-        if online:
-            log("deep-translator already included in online-only packages above.")
-        else:
-            warn("Translation (deep-translator) requires internet — skipped in offline mode.")
-            warn("  It will be installed automatically if you re-run with --online-only.")
+    # deep-translator is already included in ONLINE_ONLY_PACKAGES above when
+    # online=True, and skipped with a warning when offline.  Nothing extra to do.
 
     # ── Optional: LLM + summarization ─────────────────────────────────────────
     if llm:
@@ -467,9 +473,13 @@ m = WhisperModel("{model_name}", device="cpu", compute_type="int8",
                   download_root=cache)
 print("Model ready.", flush=True)
 """
-    tmp = Path(tempfile.mktemp(suffix=".py"))
-    tmp.write_text(script)
+    tmp = None
     try:
+        import tempfile as _tf
+        with _tf.NamedTemporaryFile(mode="w", suffix=".py", delete=False,
+                                    encoding="utf-8") as _fh:
+            _fh.write(script)
+            tmp = Path(_fh.name)
         result = subprocess.run([python_exe(), str(tmp)],
                                 text=True, capture_output=False)
         if result.returncode != 0:
@@ -478,7 +488,8 @@ print("Model ready.", flush=True)
         else:
             ok(f"Whisper model '{model_name}' cached at {models_dir}")
     finally:
-        tmp.unlink(missing_ok=True)
+        if tmp and tmp.exists():
+            tmp.unlink(missing_ok=True)
 
 # ─── Vosk model download ─────────────────────────────────────────────────────
 VOSK_MODELS = {
@@ -576,7 +587,7 @@ def create_shortcut(install_dir: Path, script_dir: Path):
         desktop = Path(os.path.expanduser("~")) / "Desktop"
         lnk     = desktop / "Spoaken.lnk"
 
-        icon_arg = f'$s.IconLocation = "{ico_path}"' if ico_path.exists() else ""
+        icon_arg = f'$s.IconLocation = "{ico_path}";' if ico_path.exists() else ""
 
         ps = (
             f'$ws = New-Object -ComObject WScript.Shell; '
@@ -665,7 +676,7 @@ def create_shortcut(install_dir: Path, script_dir: Path):
 def write_runtime_config(cfg: dict, install_dir: Path, online: bool = True):
     config_path = install_dir / "spoaken_config.json"
     install_dir.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         json.dump({
             # ── Network / offline mode ─────────────────────────────────────────
             # offline_mode = True  → spoaken_config.is_online() always returns False
@@ -679,21 +690,21 @@ def write_runtime_config(cfg: dict, install_dir: Path, online: bool = True):
             "whisper_enabled":        True,
             "whisper_compute":        "auto",
             "vosk_model":             cfg.get("vosk_model", None),
-            "vosk_enabled":           cfg.get("vosk_enabled", True),
+            "vosk_enabled":           cfg.get("vosk_enabled", False),
             "enable_giga_model":      False,
             "vosk_model_accurate":    "vosk-model-en-us-0.42-gigaspeech",
             # ── Hardware ──────────────────────────────────────────────────────
-            "gpu_enabled":            cfg.get("gpu", True),
+            "gpu_enabled":            cfg.get("gpu", False),
             "mic_device":             None,
-            "noise_suppression":      cfg.get("noise", True),
+            "noise_suppression":      cfg.get("noise", False),
             # ── Grammar ───────────────────────────────────────────────────────
             "grammar_enabled":        cfg.get("grammar", True),
             "t5_model":               "vennify/t5-base-grammar-correction",
             # ── Chat / networking ──────────────────────────────────────────────
-            "chat_server_enabled":    cfg.get("chat_server_enabled", True),
+            "chat_server_enabled":    cfg.get("chat_server_enabled", False),
             "chat_server_port":       cfg.get("chat_server_port", 55300),
             "chat_server_token":      cfg.get("chat_server_token", "spoaken"),
-            "android_stream_enabled": cfg.get("android_stream_enabled", True),
+            "android_stream_enabled": cfg.get("android_stream_enabled", False),
             "android_stream_port":    cfg.get("android_stream_port", 55301),
             "bind_address":           "",
             # ── Security / PKI ────────────────────────────────────────────────
@@ -746,7 +757,7 @@ def interactive_config() -> dict:
         print(f"  {i}. {m}{suffix}")
     while True:
         try:
-            vc = int(input("\nSelect Vosk model [default: 1 = vosk-model-small-en-us-0.15]: ") or "1")
+            vc = int(input("\nSelect Vosk model [default: 0 = none]: ") or "0")
             if vc == 0:
                 vosk_model, vosk_enabled = None, False
             else:
@@ -755,10 +766,10 @@ def interactive_config() -> dict:
         except (ValueError, IndexError):
             print("Invalid choice, try again.")
 
-    gpu_raw        = input("\nEnable GPU / CUDA acceleration? [Y/n]: ").strip().lower()
+    gpu_raw        = input("\nEnable GPU / CUDA acceleration? [y/N]: ").strip().lower()
     grammar_raw    = input("Install grammar correction (HappyTransformer/T5)? [Y/n]: ").strip().lower()
-    noise_raw      = input("Install noise suppression (noisereduce)? [Y/n]: ").strip().lower()
-    llm_raw        = input("Install LLM + summarization packages (ollama, sumy, nltk)? [Y/n]: ").strip().lower()
+    noise_raw      = input("Install noise suppression (noisereduce)? [y/N]: ").strip().lower()
+    llm_raw        = input("Install LLM + summarization packages (ollama, sumy, nltk)? [y/N]: ").strip().lower()
     vad_raw        = input("Install webrtcvad for better Voice Activity Detection? [Y/n]: ").strip().lower()
 
     print(f"\n{CYAN}── Online / Offline Mode ───────────────────────────────────{NC}")
@@ -771,61 +782,61 @@ def interactive_config() -> dict:
 
     print(f"\n{CYAN}── Chat / Networking ──────────────────────────────────────{NC}")
     print("  LAN chat lets other Spoaken users on your network connect to this machine.")
-    chat_raw       = input("Enable LAN chat server at startup? [Y/n]: ").strip().lower()
+    chat_raw       = input("Enable LAN chat server at startup? [y/N]: ").strip().lower()
     chat_port      = 55300
     chat_token     = "spoaken"
-    if chat_raw not in ("n", "no"):
+    if chat_raw in ("y", "yes"):
         port_in = input("  Chat server port [55300]: ").strip()
         chat_port  = int(port_in) if port_in.isdigit() else 55300
         token_in   = input("  Shared auth token [spoaken]: ").strip()
         chat_token = token_in or "spoaken"
 
-    android_raw  = input("Enable Android/browser live transcript stream? [Y/n]: ").strip().lower()
+    android_raw  = input("Enable Android/browser live transcript stream? [y/N]: ").strip().lower()
     android_port = 55301
-    if android_raw not in ("n", "no"):
+    if android_raw in ("y", "yes"):
         port_in = input("  Stream port [55301]: ").strip()
         android_port = int(port_in) if port_in.isdigit() else 55301
 
     default_dir = {
         "Windows": "C:\\Program Files\\Spoaken",
         "Darwin":  "/Applications/Spoaken",
-        "Linux":   os.path.expanduser("~/spoaken"),
-    }.get(OS, os.path.expanduser("~/spoaken"))
+        "Linux":   os.path.expanduser("~/Spoaken"),
+    }.get(OS, os.path.expanduser("~/Spoaken"))
     idir = input(f"\nInstall directory [{default_dir}]: ").strip() or default_dir
 
     return {
         "whisper_model":          whisper_model,
         "vosk_model":             vosk_model,
         "vosk_enabled":           vosk_enabled,
-        "gpu":                    gpu_raw not in ("n", "no"),
+        "gpu":                    gpu_raw in ("y", "yes"),
         "grammar":                grammar_raw not in ("n", "no"),
-        "noise":                  noise_raw not in ("n", "no"),
+        "noise":                  noise_raw in ("y", "yes"),
         "translation":            online,   # translation is included automatically in online mode
-        "llm":                    llm_raw not in ("n", "no"),
+        "llm":                    llm_raw in ("y", "yes"),
         "vad":                    vad_raw not in ("n", "no"),
         "online":                 online,
-        "chat_server_enabled":    chat_raw not in ("n", "no"),
+        "chat_server_enabled":    chat_raw in ("y", "yes"),
         "chat_server_port":       chat_port,
         "chat_server_token":      chat_token,
-        "android_stream_enabled": android_raw not in ("n", "no"),
+        "android_stream_enabled": android_raw in ("y", "yes"),
         "android_stream_port":    android_port,
         "install_dir":            idir,
     }
 
 # ─── Main installation orchestrator ───────────────────────────────────────────
 def run_install(cfg: dict):
-    install_dir     = Path(cfg.get("install_dir", os.path.expanduser("~/spoaken")))
+    install_dir     = Path(cfg.get("install_dir", os.path.expanduser("~/Spoaken")))
     whisper_model   = cfg.get("whisper_model", "base.en")
     vosk_model      = cfg.get("vosk_model", None)
-    vosk_enabled    = cfg.get("vosk_enabled", True)
-    gpu             = cfg.get("gpu", True)
+    vosk_enabled    = cfg.get("vosk_enabled", False)
+    gpu             = cfg.get("gpu", False)
     grammar         = cfg.get("grammar", True)
-    noise           = cfg.get("noise", True)
-    translation     = cfg.get("translation", True)
-    llm             = cfg.get("llm", True)
+    noise           = cfg.get("noise", False)
+    translation     = cfg.get("translation", False)
+    llm             = cfg.get("llm", False)
     vad             = cfg.get("vad", True)
-    chat_enabled    = cfg.get("chat_server_enabled", True)
-    android_enabled = cfg.get("android_stream_enabled", True)
+    chat_enabled    = cfg.get("chat_server_enabled", False)
+    android_enabled = cfg.get("android_stream_enabled", False)
     whisper_dir     = install_dir / "models" / "whisper"
     vosk_dir        = install_dir / "models" / "vosk"
 
@@ -1056,7 +1067,7 @@ Examples:
         if cfg_path.exists():
             with open(cfg_path) as f:
                 _c = json.load(f)
-            install_dir = Path(_c.get("install_dir", os.path.expanduser("~/spoaken")))
+            install_dir = Path(_c.get("install_dir", os.path.expanduser("~/Spoaken")))
             script_dir  = Path(__file__).parent.resolve()
             src_spoaken = script_dir / "spoaken"
             dest_spoaken = install_dir / "spoaken"
@@ -1126,7 +1137,7 @@ Examples:
         if not vm:
             err("No vosk_model specified in config.")
             sys.exit(1)
-        install_dir = Path(cfg.get("install_dir", os.path.expanduser("~/spoaken")))
+        install_dir = Path(cfg.get("install_dir", os.path.expanduser("~/Spoaken")))
         install_vosk_model(vm, install_dir / "models" / "vosk")
         sys.exit(0)
 

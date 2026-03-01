@@ -36,10 +36,11 @@ for %%p in (python3.exe python.exe py.exe) do (
         for /f "tokens=2 delims= " %%v in ('%%p --version 2^>^&1') do (
             set PY_VER=%%v
         )
-        :: Check major.minor >= 3.9
+        :: Check major.minor >= 3.9 using arithmetic comparison (avoids lexicographic bug)
         for /f "tokens=1,2 delims=." %%a in ("!PY_VER!") do (
             if %%a equ 3 (
-                if %%b geq 9 (
+                set /A _MINOR=%%b
+                if !_MINOR! geq 9 (
                     set PYTHON_EXE=%%p
                     echo  [ok] Found Python !PY_VER! at %%p
                     goto :python_found

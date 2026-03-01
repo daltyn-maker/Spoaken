@@ -72,7 +72,7 @@ if [[ -z "$PYTHON" ]]; then
         fi
         brew install python@3.11
         PYTHON="$(brew --prefix python@3.11)/bin/python3.11"
-        ok "Python 3.14 installed via Homebrew"
+        ok "Python 3.11 installed via Homebrew"
 
     elif [[ "$OS" == "Linux" ]]; then
         if command -v apt-get &>/dev/null; then
@@ -104,21 +104,18 @@ if [[ ! -f "$SCRIPT_DIR/install.py" ]]; then
 fi
 
 # ── 3. Determine config mode ────────────────────────────────────────────────────
-CONFIG_ARG=""
+CONFIG_ARGS=()
 if [[ -f "$SCRIPT_DIR/spoaken_config.json" ]]; then
     log "Found spoaken_config.json — using saved configuration."
-    CONFIG_ARG="--config $SCRIPT_DIR/spoaken_config.json"
+    CONFIG_ARGS=(--config "$SCRIPT_DIR/spoaken_config.json")
 else
     log "No config file found. Launching interactive setup."
-    CONFIG_ARG="--interactive"
+    CONFIG_ARGS=(--interactive)
 fi
 
 # ── 4. Collect any extra flags passed to this script ──────────────────────────
 #    e.g.  ./install.sh --noise --translation --llm
-EXTRA_FLAGS=""
-for arg in "$@"; do
-    EXTRA_FLAGS="$EXTRA_FLAGS $arg"
-done
+#    Pass "$@" directly so quoted arguments with spaces are preserved.
 
 # ── 5. macOS: request Accessibility permission reminder ────────────────────────
 if [[ "$OS" == "Darwin" ]]; then
@@ -135,8 +132,7 @@ fi
 log "Launching Spoaken installer..."
 echo ""
 
-# shellcheck disable=SC2086
-"$PYTHON" "$SCRIPT_DIR/install.py" $CONFIG_ARG $EXTRA_FLAGS
+"$PYTHON" "$SCRIPT_DIR/install.py" "${CONFIG_ARGS[@]}" "$@"
 
 EXIT_CODE=$?
 
@@ -146,7 +142,7 @@ if [[ $EXIT_CODE -eq 0 ]]; then
     echo -e "${GREEN}║  Bootstrap complete. Spoaken is ready to use.        ║${NC}"
     echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "  Launch with: ${CYAN}python3 spoaken/spoaken_main.py${NC}"
+    echo -e "  Launch with: ${CYAN}python3 ~/Spoaken/spoaken/spoaken_main.py${NC}"
     echo ""
     echo -e "  To add optional packages later, re-run with flags, e.g.:"
     echo -e "    ${CYAN}./install.sh --noise --translation --llm${NC}"
