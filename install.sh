@@ -132,9 +132,11 @@ fi
 log "Launching Spoaken installer..."
 echo ""
 
+# Temporarily disable exit-on-error so we can catch the python exit code
+set +e
 "$PYTHON" "$SCRIPT_DIR/install.py" "${CONFIG_ARGS[@]}" "$@"
-
 EXIT_CODE=$?
+set -e
 
 echo ""
 if [[ $EXIT_CODE -eq 0 ]]; then

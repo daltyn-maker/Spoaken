@@ -8,6 +8,16 @@ Usage:
     python install.py --interactive            # CLI prompt mode
     #
 """
+#!/usr/bin/env python3
+"""
+Spoaken — Cross-Platform Installer Backend
+Supports: Windows 10/11 · macOS 12+ · Ubuntu/Debian · Fedora/RHEL · Arch Linux
+Usage:
+    python install.py                          # reads spoaken_config.json
+    python install.py --config my_config.json  # custom config path
+    python install.py --interactive            # CLI prompt mode
+    #
+"""
 
 import sys
 import os
@@ -574,11 +584,14 @@ def copy_source_files(script_dir: Path, install_dir: Path, online: bool = True):
 def create_shortcut(install_dir: Path, script_dir: Path):
     """
     Create an OS-appropriate launcher/shortcut for spoaken_main.py.
-    Looks for Art/logo.ico (Windows) or Art/logo.png (macOS/Linux) in
-    script_dir; falls back gracefully if the Art folder is absent.
     """
+    # Force the install directory to be absolute so shortcuts don't break
+    install_dir = install_dir.resolve()
+    
     main_py   = install_dir / "spoaken" / "spoaken_main.py"
-    art_dir   = script_dir / "Art"
+    
+    # FIX: Point to the copied Art directory in the install location, not the installer's source
+    art_dir   = install_dir / "spoaken" / "Art"
     ico_path  = art_dir / "logo.ico"
     png_path  = art_dir / "logo.png"
 
@@ -670,7 +683,6 @@ def create_shortcut(install_dir: Path, script_dir: Path):
 
     else:
         warn(f"Shortcut creation not supported on OS: {OS}")
-
 
 # ─── Write runtime config ─────────────────────────────────────────────────────
 def write_runtime_config(cfg: dict, install_dir: Path, online: bool = True):

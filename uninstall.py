@@ -157,7 +157,8 @@ def _resolve_paths() -> dict:
         root_dir    = Path(_paths.ROOT_DIR)
         vosk_dir    = Path(_paths.VOSK_DIR)
         whisper_dir = Path(_paths.WHISPER_DIR)
-        happy_dir   = Path(_paths.HAPPY_DIR)
+        # HAPPY_DIR is not defined in paths.py — fall back to a sensible default
+        happy_dir   = Path(getattr(_paths, "HAPPY_DIR", root_dir / "happy"))
         log_dir     = Path(_paths.LOG_DIR)
         art_dir     = Path(_paths.ART_DIR)
     except Exception:

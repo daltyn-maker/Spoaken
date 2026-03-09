@@ -1,136 +1,150 @@
 @echo off
+:: ══════════════════════════════════════════════════════════════════════
+::  Spoaken — Windows Bootstrap Installer
+::  Usage: Double-click or run from an Administrator Command Prompt
+::  Works on: Windows 10 (1903+) / Windows 11
+:: ══════════════════════════════════════════════════════════════════════
 setlocal EnableDelayedExpansion
-title Spoaken Installer
-color 0B
+
+set "SCRIPT_DIR=%~dp0"
+:: Strip trailing backslash
+if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
 echo.
-echo  ============================================================
-echo   SPOAKEN — Windows Bootstrap Installer
-echo  ============================================================
+echo  +======================================================+
+echo  ^|      SPOAKEN -- Windows Bootstrap Installer          ^|
+echo  +======================================================+
 echo.
-echo  Optional flags you can pass to this script:
-echo    --noise        Install noise suppression (noisereduce)
-echo    --translation  Install translation support (deep-translator)
-echo    --llm          Install LLM + summarization (ollama, sumy, nltk)
-echo    --no-vad       Skip webrtcvad  (use energy-gate fallback)
-echo    --chat         Enable LAN chat server in config
+echo   Optional flags (passed through to install.py):
+echo     --noise        Install noise suppression (noisereduce)
+echo     --translation  Install translation support (deep-translator)
+echo     --llm          Install LLM + summarization (ollama, sumy, nltk)
+echo     --no-vad       Skip webrtcvad  (use energy-gate fallback)
+echo     --chat         Enable LAN chat server in config
+echo     --offline      Force offline install
 echo.
-echo  Example:  windows_install.bat --noise --translation
+echo   Example:  windows_install.bat --noise --translation
 echo.
 
-:: ── Check for Admin rights ────────────────────────────────────────────────────
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  [!] This installer works best with Administrator privileges.
-    echo  [!] Some steps may fail without them.
-    echo  [!] Right-click this file and select "Run as administrator" for best results.
-    echo.
-    pause
-)
+:: ── 1. Find Python 3.9+ ────────────────────────────────────────────────────
+echo [Spoaken] Checking for Python 3.9+...
 
-:: ── Try to find Python 3.9+ ───────────────────────────────────────────────────
-set PYTHON_EXE=
-for %%p in (python3.exe python.exe py.exe) do (
-    where %%p >nul 2>&1
-    if !errorlevel! equ 0 (
-        for /f "tokens=2 delims= " %%v in ('%%p --version 2^>^&1') do (
-            set PY_VER=%%v
+set "PYTHON="
+set "PYNUM="
+
+:: Try py launcher first (most reliable on Windows)
+where py >nul 2>&1
+if %errorlevel%==0 (
+    for /f "tokens=*" %%v in ('py -3 -c "import sys; print(sys.version_info.major*100+sys.version_info.minor)" 2^>nul') do set "PYNUM=%%v"
+    if defined PYNUM (
+        if !PYNUM! GEQ 309 (
+            set "PYTHON=py -3"
+            for /f "tokens=*" %%v in ('py -3 --version 2^>nul') do echo   [OK] Found %%v via py launcher
+            goto :found_python
+        ) else (
+            echo   [!] py launcher found Python but version is too old. Need 3.9+.
         )
-        :: Check major.minor >= 3.9 using arithmetic comparison (avoids lexicographic bug)
-        for /f "tokens=1,2 delims=." %%a in ("!PY_VER!") do (
-            if %%a equ 3 (
-                set /A _MINOR=%%b
-                if !_MINOR! geq 9 (
-                    set PYTHON_EXE=%%p
-                    echo  [ok] Found Python !PY_VER! at %%p
-                    goto :python_found
-                )
-            )
-            if %%a gtr 3 (
-                set PYTHON_EXE=%%p
-                echo  [ok] Found Python !PY_VER! at %%p
-                goto :python_found
-            )
-        )
-        echo  [!] Found Python !PY_VER! but Spoaken needs 3.9+
     )
 )
 
-:: ── Python not found — install via winget ────────────────────────────────────
-echo  [*] Python 3.9+ not found. Installing via winget...
+:: Try python3 / python in PATH
+for %%c in (python3 python) do (
+    if not defined PYTHON (
+        where %%c >nul 2>&1
+        if !errorlevel!==0 (
+            set "PYNUM="
+            for /f "tokens=*" %%v in ('%%c -c "import sys; print(sys.version_info.major*100+sys.version_info.minor)" 2^>nul') do set "PYNUM=%%v"
+            if defined PYNUM (
+                if !PYNUM! GEQ 309 (
+                    set "PYTHON=%%c"
+                    for /f "tokens=*" %%v in ('%%c --version 2^>nul') do echo   [OK] Found %%v
+                    goto :found_python
+                ) else (
+                    echo   [!] Found %%c but version is too old. Need 3.9+.
+                )
+            )
+        )
+    )
+)
+
+:: Python not found — try winget
+echo   [!] Python 3.9+ not found. Attempting to install via winget...
 where winget >nul 2>&1
 if %errorlevel% neq 0 (
-    echo  [X] winget is not available on this system.
-    echo.
-    echo  Please download Python 3.11 from: https://www.python.org/downloads/
-    echo  Make sure to check "Add Python to PATH" during installation,
-    echo  then re-run this script.
-    pause
-    exit /b 1
+    echo   [X] winget not available.
+    echo       Please install Python 3.11+ from https://www.python.org/downloads/
+    echo       Then re-run this script.
+    goto :error
 )
 
-winget install --id Python.Python.3.11 ^
-    --silent ^
-    --scope machine ^
-    --accept-package-agreements ^
-    --accept-source-agreements
-
+winget install --id Python.Python.3.11 -s winget --silent --accept-package-agreements --accept-source-agreements
 if %errorlevel% neq 0 (
-    echo  [X] winget failed to install Python.
-    echo  Please download from https://www.python.org/downloads/ and retry.
-    pause
-    exit /b 1
+    echo   [X] winget failed to install Python.
+    echo       Please install manually from https://www.python.org/downloads/
+    goto :error
 )
 
-echo  [ok] Python installed. Refreshing PATH...
-
-:: Refresh PATH so we can find the new Python immediately
-for /f "tokens=*" %%i in ('powershell -NoProfile -Command "[System.Environment]::GetEnvironmentVariable(\"Path\",\"Machine\")"') do set PATH=%%i;%PATH%
-
-set PYTHON_EXE=python
-
-:python_found
-echo.
-
-:: ── Verify install.py is present ─────────────────────────────────────────────
-if not exist "%~dp0install.py" (
-    echo  [X] install.py not found in %~dp0
-    echo  Please ensure install.py is in the same folder as this script.
-    pause
-    exit /b 1
-)
-
-:: ── Check for spoaken_config.json ─────────────────────────────────────────────
-set CONFIG_ARG=
-if exist "%~dp0spoaken_config.json" (
-    echo  [*] Found spoaken_config.json — using saved configuration.
-    set CONFIG_ARG=--config "%~dp0spoaken_config.json"
-) else (
-    echo  [*] No config file found. Will run interactive setup.
-    set CONFIG_ARG=--interactive
-)
-
-:: ── Collect any extra flags passed to this script (--noise, --llm, etc.) ──────
-set EXTRA_FLAGS=%*
-
-:: ── Run the Python installer ──────────────────────────────────────────────────
-echo  [*] Launching Spoaken installer...
-echo.
-%PYTHON_EXE% "%~dp0install.py" %CONFIG_ARG% %EXTRA_FLAGS%
-
-if %errorlevel% equ 0 (
-    echo.
-    echo  ============================================================
-    echo   Installation finished. Press any key to exit.
-    echo  ============================================================
-    echo.
-    echo  To add optional features later, re-run with flags, e.g.:
-    echo    windows_install.bat --noise --translation --llm
-) else (
-    echo.
-    echo  [X] Installation encountered errors. See output above.
-    echo  You can retry with:  python install.py --interactive
-)
-
+echo   [OK] Python 3.11 installed via winget.
+echo   Please restart this script so the new Python is visible in PATH.
 pause
-endlocal
+exit /b 0
+
+:found_python
+
+:: Confirm version
+for /f "tokens=*" %%v in ('!PYTHON! -c "import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\")" 2^>nul') do (
+    echo [Spoaken] Using Python %%v
+)
+
+:: ── 2. Ensure install.py is present ───────────────────────────────────────────
+if not exist "%SCRIPT_DIR%\install.py" (
+    echo   [X] install.py not found in %SCRIPT_DIR%
+    echo       Please place install.py alongside this script.
+    goto :error
+)
+
+:: ── 3. Determine config mode ──────────────────────────────────────────────────
+set "CONFIG_ARGS="
+if exist "%SCRIPT_DIR%\spoaken_config.json" (
+    echo [Spoaken] Found spoaken_config.json -- using saved configuration.
+    set "CONFIG_ARGS=--config "%SCRIPT_DIR%\spoaken_config.json""
+) else (
+    echo [Spoaken] No config file found. Launching interactive setup.
+    set "CONFIG_ARGS=--interactive"
+)
+
+:: ── 4. Run the Python installer ────────────────────────────────────────────────
+echo.
+echo [Spoaken] Launching Spoaken installer...
+echo.
+
+!PYTHON! "%SCRIPT_DIR%\install.py" %CONFIG_ARGS% %*
+set "EXIT_CODE=%errorlevel%"
+
+echo.
+if %EXIT_CODE%==0 (
+    echo  +======================================================+
+    echo  ^|  Bootstrap complete. Spoaken is ready to use.        ^|
+    echo  +======================================================+
+    echo.
+    echo   Launch with:  python spoaken\spoaken_main.py
+    echo.
+    echo   To add optional packages later, re-run with flags, e.g.:
+    echo     windows_install.bat --noise --translation --llm
+    echo   Or install from the Spoaken Update window.
+) else (
+    echo   [X] Installation finished with errors (exit code %EXIT_CODE%^).
+    echo       Review the output above and retry with:
+    echo       python install.py --interactive
+)
+
+echo.
+pause
+exit /b %EXIT_CODE%
+
+:error
+echo.
+echo   [X] Installation aborted.
+echo.
+pause
+exit /b 1
