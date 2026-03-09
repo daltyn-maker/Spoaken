@@ -206,7 +206,7 @@ class SpoakenSplash(ctk.CTk):
         ctk.CTkLabel(
             self.main_frame,
             text="SPOAKEN",
-            font=("Segoe UI Semibold", 28 if self._gif_frames or True else 30),
+            font=("Segoe UI Semibold", 28 if self._gif_frames else 30),
             text_color=TXT_TEAL,
         ).pack(pady=(0, 2))
 

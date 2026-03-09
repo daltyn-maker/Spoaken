@@ -146,6 +146,9 @@ class TranscriptionController:
             self._t5_model: str = _T5_MODEL
         except Exception:
             self._t5_model = "vennify/t5-base-grammar-correction"
+        # _t5_enabled / _t5_mode are GUI state flags used to drive the
+        # manual "Polish" button.  T5 correction is intentionally on-demand
+        # only — it is NOT wired into the live recording pipeline.
         self._t5_enabled : bool       = False
         self._t5_mode    : str | None = None   # "correct" | None
 
@@ -288,33 +291,57 @@ class TranscriptionController:
         """
         Run the active T5 model on `text` (or the full transcript if None).
         Returns the corrected/paraphrased output string.
-        Gracefully falls back to the raw text if transformers is not installed.
+
+        Uses the model instance already loaded by TranscriptionModel so
+        weights are never re-downloaded at runtime.  Sets TRANSFORMERS_OFFLINE
+        as a safeguard to prevent any accidental live HuggingFace traffic.
         """
         src = text or " ".join(self.model.data_store)
         if not src.strip():
             return "Nothing to process yet."
         model_id = getattr(self, "_t5_model", "vennify/t5-base-grammar-correction")
         try:
-            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-            import torch
-            tokenizer = AutoTokenizer.from_pretrained(model_id)
-            model_t5  = AutoModelForSeq2SeqLM.from_pretrained(model_id)
-            inputs    = tokenizer(
-                "grammar: " + src[:512], return_tensors="pt",
-                max_length=512, truncation=True,
-            )
-            with torch.no_grad():
-                outputs = model_t5.generate(
-                    **inputs, max_new_tokens=256,
-                    num_beams=4, early_stopping=True,
+            # Prefer the pre-loaded model object on TranscriptionModel (avoids
+            # a costly re-load and guarantees offline-only operation).
+            if self.model.tool is not None:
+                happy_model = self.model.tool
+                result = happy_model.generate_text(
+                    "grammar: " + src[:512],
+                ).text
+            else:
+                # Fallback path: load via transformers using the local cache only.
+                import os
+                os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+                from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+                import torch
+                try:
+                    from paths import HAPPY_DIR
+                    cache_dir = str(HAPPY_DIR)
+                except ImportError:
+                    cache_dir = None
+                tokenizer = AutoTokenizer.from_pretrained(
+                    model_id, cache_dir=cache_dir, local_files_only=True)
+                model_t5  = AutoModelForSeq2SeqLM.from_pretrained(
+                    model_id, cache_dir=cache_dir, local_files_only=True)
+                inputs = tokenizer(
+                    "grammar: " + src[:512], return_tensors="pt",
+                    max_length=512, truncation=True,
                 )
-            result = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                with torch.no_grad():
+                    outputs = model_t5.generate(
+                        **inputs, max_new_tokens=256,
+                        num_beams=4, early_stopping=True,
+                    )
+                result = tokenizer.decode(outputs[0], skip_special_tokens=True)
         except ImportError:
             result = src   # transformers not installed — pass through
         except Exception as exc:
             result = src
             if hasattr(self, "view"):
-                self.view.thread_safety_console(f"[T5 Error]: {exc}")
+                self.view.thread_safety_console(
+                    f"[T5 Error]: {exc}\n"
+                    "  If the model is not cached, use Update & Repair → Download & Cache."
+                )
         if hasattr(self, "view"):
             self.view.thread_safety_console(f"[T5 {model_id}]:\n{result}")
         return result
@@ -541,8 +568,6 @@ class TranscriptionController:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _parse_command(self, text: str) -> bool:
-        if self._cmd_parser is None:
-            return self._parse_command_fallback(text)
         handled, output = self._cmd_parser.parse(text)
         if handled:
             if output:
@@ -555,15 +580,6 @@ class TranscriptionController:
                 f"  Type  help  to see every available command."
             )
         return handled
-
-    def _parse_command_fallback(self, text: str) -> bool:
-        t = text.strip().lower()
-        m = re.match(r"spoaken\.translate\(\s*(.+?)\s*\)", t)
-        if m:
-            lang = m.group(1).strip()
-            self._translate_lang = None if lang in ("off", "stop", "none") else lang
-            return True
-        return False
 
     def _maybe_translate(self, text: str) -> str:
         if not self._translate_lang:
@@ -645,7 +661,7 @@ class TranscriptionController:
 
             threading.Thread(target=self._audio_capture_loop, daemon=True).start()
 
-            if VOSK_ENABLED and self.model.small_model is not None:
+            if VOSK_ENABLED and self.model.vosk_model is not None:
                 threading.Thread(target=self.audio_stream_loop, daemon=True).start()
 
             if WHISPER_ENABLED and self.model.whisper_model is not None:
@@ -706,7 +722,7 @@ class TranscriptionController:
 
     def audio_stream_loop(self):
         self.view.thread_safety_console("[Console]: Vosk stream open")
-        rec = self.model.get_fast_recognizer()
+        rec = self.model.get_vosk_recognizer()
         last_partial   = ""
         partial_seg_id = None
 

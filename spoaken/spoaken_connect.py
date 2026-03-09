@@ -431,11 +431,11 @@ class TranscriptionModel:
         """
 
         # ── Vosk ──────────────────────────────────────────────────────────────
-        self.small_model = None
+        self.vosk_model = None
 
         if _vosk_ok and vosk_model:
             try:
-                self.small_model = VoskModel(_resolve_vosk(vosk_model))
+                self.vosk_model = VoskModel(_resolve_vosk(vosk_model))
             except FileNotFoundError as exc:
                 print(exc, file=sys.stderr)
 
@@ -471,12 +471,8 @@ class TranscriptionModel:
         self.tool = None
 
         # ── Audio queues — one per consumer so they never race ────────────────
-        self.vosk_queue    = Queue()   # → audio_stream_loop (Vosk fast)
+        self.vosk_queue    = Queue()   # → audio_stream_loop (Vosk)
         self.whisper_queue = Queue()   # → whisper_loop
-
-        # Legacy alias kept so controller code that references model.audio_queue
-        # still compiles; route it to vosk_queue.
-        self.audio_queue   = self.vosk_queue
 
         self.is_running  = False
         self.data_store  = []          # Vosk confirmed sentences
@@ -500,10 +496,10 @@ class TranscriptionModel:
 
     # ── Recognizer factories ───────────────────────────────────────────────────
 
-    def get_fast_recognizer(self) -> "KaldiRecognizer":
-        if self.small_model is None:
-            raise RuntimeError("[Connect]: Vosk small model not loaded.")
-        rec = KaldiRecognizer(self.small_model, 16000)
+    def get_vosk_recognizer(self) -> "KaldiRecognizer":
+        if self.vosk_model is None:
+            raise RuntimeError("[Connect]: Vosk model not loaded.")
+        rec = KaldiRecognizer(self.vosk_model, 16000)
         rec.SetWords(True)
         rec.SetPartialWords(True)
         return rec
@@ -513,7 +509,7 @@ class TranscriptionModel:
 
     def reload_vosk(self, model_name: str) -> bool:
         """
-        Replace the active Vosk small model with a different installed model.
+        Replace the active Vosk model with a different installed model.
         Returns True on success, False on failure.
         Call only while recording is stopped.
         """
@@ -521,7 +517,7 @@ class TranscriptionModel:
             return False
         try:
             new_path = _resolve_vosk(model_name)
-            self.small_model = VoskModel(new_path)
+            self.vosk_model = VoskModel(new_path)
             return True
         except Exception as exc:
             print(f"[Connect]: reload_vosk failed — {exc}", file=sys.stderr)

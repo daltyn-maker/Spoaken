@@ -693,8 +693,9 @@ class SpoakenUpdater(ctk.CTkToplevel):
                 pass
         if _png.exists():
             try:
-                img = Image.open(_png).resize((64, 64))
-                self._icon = ImageTk.PhotoImage(img)
+                from PIL import Image as _PILImg, ImageTk as _ITk
+                img = _PILImg.open(_png).resize((64, 64))
+                self._icon = _ITk.PhotoImage(img)
                 self.after(200, lambda: self.wm_iconphoto(True, self._icon))
             except Exception:
                 pass
@@ -1044,13 +1045,6 @@ class SpoakenUpdater(ctk.CTkToplevel):
             command=self._on_install_ollama_pkg,
         ).grid(row=0, column=1)
 
-        ctk.CTkButton(
-            ollama_pkg_row, text="pip install summarize-pkgs",
-            font=FONT_SMALL, height=26, corner_radius=5,
-            fg_color="#101830", hover_color="#1a2850",
-            text_color=TXT_MAIN,
-            command=self._on_install_summarize_pkgs,
-        ).grid(row=0, column=2, padx=(6, 0))
 
         # ── T5 Text-to-Text model separator ───────────────────────────────────
         ctk.CTkFrame(model_card, height=1, fg_color=BORDER_SUB, corner_radius=0,
@@ -1211,32 +1205,6 @@ class SpoakenUpdater(ctk.CTkToplevel):
             self._log("  ✗  install failed — check output above\n")
         self._set_busy(False)
         self.after(500, self._check_ollama_status)
-
-    def _on_install_summarize_pkgs(self):
-        """Install sumy, nltk, scikit-learn for advanced summarization."""
-        if self._busy:
-            return
-        pkgs = ["sumy", "nltk", "scikit-learn"]
-        self._set_busy(True, f"Installing {len(pkgs)} summarization packages …")
-        threading.Thread(target=self._install_summarize_worker,
-                         args=(pkgs,), daemon=True).start()
-
-    def _install_summarize_worker(self, pkgs: list):
-        self._log("\nInstalling summarization packages …")
-        for pkg in pkgs:
-            _pip_install(pkg, log_fn=self._log)
-        # Download NLTK data
-        try:
-            import nltk
-            self._log("  Downloading NLTK punkt tokenizer …")
-            nltk.download("punkt", quiet=True)
-            nltk.download("punkt_tab", quiet=True)
-            nltk.download("stopwords", quiet=True)
-            self._log("  ✔  NLTK data downloaded")
-        except Exception as exc:
-            self._log(f"  NLTK data: {exc}")
-        self._log("\n  ✔  Summarization packages ready\n")
-        self._set_busy(False)
 
     # ─────────────────────────────────────────────────────────────────────────
     # T5 / Transformer model installer

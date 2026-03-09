@@ -53,7 +53,6 @@ import sys
 import threading
 import time
 from collections import deque
-from paths import ART_DIR
 
 # ── Runtime thresholds ────────────────────────────────────────────────────────
 WARN_CPU_PCT     = 80

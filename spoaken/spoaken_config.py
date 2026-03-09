@@ -20,10 +20,8 @@ _CONFIG_CANDIDATES = [
 # ── Built-in defaults (used when no config file is found) ─────────────────────
 _DEFAULTS: dict = {
     # ── Vosk ──────────────────────────────────────────────────────────────────
-    "vosk_enabled":           True,
+    "vosk_enabled":           true,
     "vosk_model":             "vosk-model-small-en-us-0.15",
-    "enable_giga_model":      False,
-    "vosk_model_accurate":    "vosk-model-en-us-0.42-gigaspeech",
 
     # ── Whisper (faster-whisper) ───────────────────────────────────────────────
     "whisper_enabled":        True,
@@ -65,28 +63,30 @@ for config_path in _CONFIG_CANDIDATES:
                 config_data.update(json.load(_f))
             break
         except Exception as parse_error:
-            print(f"[Config Warning]: could not parse {_cp}: {_e}", file=sys.stderr)
+            print(f"[Config Warning]: could not parse {config_path}: {parse_error}", file=sys.stderr)
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
 # Vosk
 VOSK_ENABLED          = bool(config_data["vosk_enabled"])
-QUICK_VOSK_MODEL      = str(config_data["vosk_model"])
-ENABLE_GIGA_MODEL     = bool(config_data["enable_giga_model"])
-ACCURATE_VOSK_MODEL   = str(config_data["vosk_model_accurate"])
+VOSK_MODEL            = str(config_data["vosk_model"])
 
 # Whisper
 WHISPER_ENABLED       = bool(config_data["whisper_enabled"])
 WHISPER_MODEL         = str(config_data["whisper_model"])
 WHISPER_COMPUTE       = str(config_data.get("whisper_compute", "auto"))
 
-# Grammar
-GRAMMAR_ENABLED       = bool(config_data["grammar"])
+# Grammar — installer writes "grammar_enabled"; legacy configs use "grammar"
+GRAMMAR_ENABLED       = bool(config_data.get("grammar_enabled", config_data.get("grammar", True)))
 
-# Hardware
-GPU_ENABLED           = bool(config_data["gpu"])
-MIC_DEVICE            = config_data["mic_device"]           
+# Hardware — installer writes "gpu_enabled"; legacy configs use "gpu"
+GPU_ENABLED           = bool(config_data.get("gpu_enabled", config_data.get("gpu", False)))
+MIC_DEVICE            = config_data["mic_device"]
 NOISE_SUPPRESSION     = bool(config_data["noise_suppression"])
+
+# Online / offline — written by installer
+OFFLINE_MODE          = bool(config_data.get("offline_mode", False))
+HAPPY_ONLINE_ONLY     = bool(config_data.get("happy_online_only", True))
 
 # Networking
 CHAT_SERVER_ENABLED   = bool(config_data["chat_server_enabled"])
@@ -117,5 +117,25 @@ DUPLICATE_FILTER      = bool(config_data["duplicate_filter"])
 T5_MODEL              = str(config_data.get("t5_model", "vennify/t5-base-grammar-correction"))
 
 
+# ── Online helper ─────────────────────────────────────────────────────────────
 
-
+def is_online() -> bool:
+    """
+    Return True if this install is allowed to make outbound internet connections.
+    Returns False immediately when offline_mode is set in config (no network probe).
+    """
+    if OFFLINE_MODE:
+        return False
+    try:
+        import socket
+        for host, port in (("1.1.1.1", 443), ("8.8.8.8", 53)):
+            try:
+                socket.setdefaulttimeout(3.0)
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.connect((host, port))
+                return True
+            except OSError:
+                continue
+    except Exception:
+        pass
+    return False

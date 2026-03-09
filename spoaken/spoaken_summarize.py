@@ -102,7 +102,9 @@ def summarize_extractive(
 
     # Positional bonus: first sentence (topic), second (expansion), last (wrap-up)
     last_idx = n - 1
-    _pos_weight = {0: 1.20, 1: 1.05, last_idx: 1.10}
+    _pos_weight = {0: 1.20, last_idx: 1.10}
+    if last_idx > 1:
+        _pos_weight[1] = 1.05  # only add if not already covered
 
     # Score every sentence and apply positional weight
     scored = [

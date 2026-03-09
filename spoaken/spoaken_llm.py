@@ -81,17 +81,22 @@ def _get_client():
 
 
 def is_ollama_running() -> bool:
-    """Return True if the Ollama daemon is reachable."""
+    """Return True if the Ollama daemon is reachable.
+
+    A positive result is cached for the session to avoid repeated network
+    probes during active transcription.  A negative result is NOT cached —
+    the user may start Ollama at any time and we want to detect that.
+    """
     global _ollama_ok
-    if _ollama_ok is not None:
-        return _ollama_ok
+    if _ollama_ok is True:   # only trust a cached positive
+        return True
     try:
         import urllib.request
         with urllib.request.urlopen(f"{OLLAMA_BASE}/api/tags", timeout=2) as r:
             _ollama_ok = r.status == 200
     except Exception:
         _ollama_ok = False
-    return _ollama_ok
+    return bool(_ollama_ok)
 
 
 def list_ollama_models() -> list[str]:
@@ -396,57 +401,7 @@ def ensure_ollama_pkg(log_fn=print) -> bool:
         return False
 
 
-def ensure_summarize_pkgs(log_fn=print) -> dict[str, bool]:
-    """
-    Check and optionally install summarization dependencies.
-    Returns dict of {package: installed_bool}.
-    """
-    import importlib.util, subprocess, shutil
 
-    pkgs = {
-        "sumy"          : "sumy",
-        "nltk"          : "nltk",
-        "scikit-learn"  : "sklearn",
-    }
-    status = {}
-    for pip_name, import_name in pkgs.items():
-        if importlib.util.find_spec(import_name.split(".")[0]):
-            status[pip_name] = True
-        else:
-            log_fn(f"[Summarize]: installing {pip_name} …")
-            cmd = [sys.executable, "-m", "pip", "install", "--quiet", pip_name]
-            if shutil.which("apt"):
-                cmd.append("--break-system-packages")
-            try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                status[pip_name] = r.returncode == 0
-                if r.returncode == 0:
-                    log_fn(f"[Summarize]: {pip_name} installed ✔")
-                else:
-                    log_fn(f"[Summarize]: {pip_name} failed — {r.stderr.strip()}")
-            except Exception as exc:
-                log_fn(f"[Summarize]: {pip_name} error — {exc}")
-                status[pip_name] = False
-
-    # Download NLTK punkt tokenizer if nltk was just installed
-    if status.get("nltk"):
-        try:
-            import nltk
-            nltk.download("punkt", quiet=True)
-            nltk.download("punkt_tab", quiet=True)
-            nltk.download("stopwords", quiet=True)
-        except Exception:
-            pass
-
-    return status
-    
-    
-    
-    
-    
-    
-    
-    
     
     
     

@@ -45,7 +45,6 @@ Command catalogue
 
   ── LAN access ───────────────────────────────────────────────────────────
   lan <on | off>             — enable / disable LAN server (toggle button)
-  port <on | off>            — alias for lan (legacy)
 
   ── Chat / rooms ─────────────────────────────────────────────────────────
   chat.connect <host[:port]> [user] [token]
@@ -348,7 +347,7 @@ class CommandParser:
             self._cmd_lan,
             "Enable / disable LAN server  (mirrors the LAN Access button)",
             "lan <on | off>",
-            aliases=("port", "server", "host"),
+            aliases=("server", "host"),
             section="LAN Access",
         )
 
@@ -470,13 +469,6 @@ class CommandParser:
             section="Utilities",
         )
 
-        self._register(
-            "graph",
-            lambda _: "[Graph]: waveform graph is in development — coming soon",
-            "Waveform analysis graph  (preview — not yet available)",
-            "graph",
-            section="Utilities",
-        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Recording / Transcript implementations
