@@ -482,7 +482,7 @@ for _arg in "${@:-}"; do
 done
 
 set +e
-"$PYTHON" "$SCRIPT_DIR/install.py" "${CONFIG_ARGS[@]:-}" "${PY_ARGS[@]:-}"
+"$PYTHON" "$SCRIPT_DIR/install.py" "${CONFIG_ARGS[@:-]}" "${PY_ARGS[@:-]}"
 EXIT_CODE=$?
 set -e
 
