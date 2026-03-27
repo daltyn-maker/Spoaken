@@ -75,7 +75,8 @@ _pkg_lookup() {
 # ══════════════════════════════════════════════════════════════════════
 copy_source_files() {
     local src_dir="$1"
-    local dest_root="$2"   # e.g. ~/Spoaken/spoaken
+    local dest_root="$2"   
+    # e.g. ~/Spoaken/spoaken
 
     local -a SUBPKGS=(core ui network processing system control)
     local -a NEVER_COPY=(install.py setup.py conftest.py)
@@ -85,6 +86,7 @@ copy_source_files() {
     log "Source file copy: $src_dir → $dest_root"
     echo ""
 
+    # ── Wipe old dest and recreate ──────────────────────────────────────
     if [[ -d "$dest_root" ]]; then
         log "Removing old $dest_root …"
         rm -rf "$dest_root"
@@ -475,12 +477,12 @@ echo ""
 
 # Filter --copy-only out of args passed to install.py (it's a shell-only flag)
 PY_ARGS=()
-for _arg in "$@"; do
+for _arg in "${@:-}"; do
     [[ "$_arg" != "--copy-only" ]] && PY_ARGS+=("$_arg")
 done
 
 set +e
-"$PYTHON" "$SCRIPT_DIR/install.py" "${CONFIG_ARGS[@]}" "${PY_ARGS[@]}"
+"$PYTHON" "$SCRIPT_DIR/install.py" "${CONFIG_ARGS[@:-]}" "${PY_ARGS[@]:-}"
 EXIT_CODE=$?
 set -e
 
